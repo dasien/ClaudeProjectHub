@@ -1,0 +1,46 @@
+name: ClaudeProjectHub
+options:
+  bundleIdPrefix: com.bgentry
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_IDENTITY: "Apple Development"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: "96XM6877Y5"
+targets:
+  ClaudeProjectHub:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Claude Project Hub
+        LSMinimumSystemVersion: "14.0"
+        NSHumanReadableCopyright: "Copyright © 2026 bgentry"
+        NSAppleEventsUsageDescription: "Claude Project Hub uses AppleScript to launch Claude in your chosen terminal application."
+        NSPrincipalClass: NSApplication
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bgentry.ClaudeProjectHub
+        ENABLE_HARDENED_RUNTIME: true
+        ENABLE_USER_SCRIPT_SANDBOXING: false
+        GENERATE_INFOPLIST_FILE: false
+schemes:
+  ClaudeProjectHub:
+    build:
+      targets:
+        ClaudeProjectHub: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    archive:
+      config: Release

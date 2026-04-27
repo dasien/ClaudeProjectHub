@@ -20,7 +20,7 @@ struct Session: Identifiable, Codable, Equatable {
         cwd: URL,
         hostKind: HostKind,
         claudeSessionId: String? = nil,
-        status: SessionStatus = .running,
+        status: SessionStatus = .idle,
         pid: Int32? = nil,
         hostWindowID: CGWindowID? = nil,
         dockState: DockState = .docked(tabIndex: 0),

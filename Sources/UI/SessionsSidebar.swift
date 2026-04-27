@@ -20,7 +20,7 @@ struct SessionsSidebar: View {
                             menuItems(for: session)
                         }
                         .simultaneousGesture(TapGesture().onEnded {
-                            if session.status == .running {
+                            if session.status.isRunning {
                                 windowManager.focus(session.id)
                             }
                         })
@@ -57,7 +57,7 @@ struct SessionsSidebar: View {
     @ViewBuilder
     private func menuItems(for session: Session) -> some View {
         switch session.status {
-        case .running:
+        case .idle, .working:
             Button("Show") {
                 store.selectedSessionID = session.id
                 windowManager.focus(session.id)

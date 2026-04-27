@@ -14,7 +14,7 @@ struct ResumeSessionDialog: View {
     private var runningSessions: [Session] {
         // Exclude this session itself in case it's somehow running.
         store.sessions
-            .filter { $0.status == .running && $0.id != session.id }
+            .filter { $0.status.isRunning && $0.id != session.id }
             .sorted { $0.lastActivityAt > $1.lastActivityAt }
     }
 

@@ -15,7 +15,7 @@ struct NewSessionDialog: View {
 
     private var runningSessions: [Session] {
         store.sessions
-            .filter { $0.status == .running }
+            .filter { $0.status.isRunning }
             .sorted { $0.lastActivityAt > $1.lastActivityAt }
     }
 

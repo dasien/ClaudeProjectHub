@@ -42,7 +42,7 @@ struct TerminalAppLauncher: SessionLauncher {
         let session = Session(
             cwd: cwd,
             hostKind: hostKind,
-            status: .running
+            status: .idle
         )
         return LaunchResult(session: session, marker: marker)
     }

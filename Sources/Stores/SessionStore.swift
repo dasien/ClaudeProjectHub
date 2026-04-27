@@ -60,7 +60,7 @@ final class SessionStore: ObservableObject {
             var s = stored
             s.pid = nil
             s.hostWindowID = nil
-            if s.status == .running {
+            if s.status.isRunning {
                 s.status = .closed
             }
             return s
@@ -98,13 +98,13 @@ extension SessionStore {
             Session(
                 cwd: URL(fileURLWithPath: "/Users/bgentry/Source/repos/server"),
                 hostKind: .terminalApp,
-                status: .running,
+                status: .working,
                 lastActivityAt: Date().addingTimeInterval(-60)
             ),
             Session(
                 cwd: URL(fileURLWithPath: "/Users/bgentry/Source/repos/web"),
                 hostKind: .terminalApp,
-                status: .running,
+                status: .idle,
                 lastActivityAt: Date().addingTimeInterval(-15 * 60)
             ),
             Session(

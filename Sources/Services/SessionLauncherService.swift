@@ -150,7 +150,7 @@ final class SessionLauncherService: ObservableObject {
             )
             // Reuse the existing Session record instead of adding a new one.
             store.update(id: session.id) {
-                $0.status = .running
+                $0.status = .idle
                 $0.pid = nil
                 $0.lastActivityAt = Date()
             }
@@ -192,7 +192,7 @@ final class SessionLauncherService: ObservableObject {
 
         if let claudePID = await waitForNewClaudePID(baseline: baselinePIDs) {
             store.update(id: sessionID) { $0.pid = claudePID }
-            if let sessionFile = await readClaudeSessionFile(pid: claudePID) {
+            if let sessionFile = await ClaudeSessionFile.read(pid: claudePID, timeout: 5) {
                 // Set-once: `claude --resume <id>` assigns a NEW sessionId to
                 // the resumed process (visible in ~/.claude/sessions/<pid>.json),
                 // but the conversation continues to be written to the ORIGINAL
@@ -241,29 +241,6 @@ final class SessionLauncherService: ObservableObject {
         let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
         let output = String(data: data, encoding: .utf8) ?? ""
         return Set(output.split(separator: "\n").compactMap { pid_t($0) })
-    }
-
-    // MARK: - Claude sessions file
-
-    /// Reads `~/.claude/sessions/<pid>.json`, polling briefly because the
-    /// file might not exist the very first millisecond after the PID
-    /// appears. Returns nil on timeout.
-    private func readClaudeSessionFile(
-        pid: pid_t,
-        timeout: TimeInterval = 5
-    ) async -> ClaudeSessionFile? {
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/sessions/\(pid).json")
-        let deadline = Date().addingTimeInterval(timeout)
-        let decoder = JSONDecoder()
-        while Date() < deadline {
-            if let data = try? Data(contentsOf: url),
-               let file = try? decoder.decode(ClaudeSessionFile.self, from: data) {
-                return file
-            }
-            try? await Task.sleep(nanoseconds: 200_000_000)
-        }
-        return nil
     }
 
     // MARK: - JSONL transcript path
@@ -316,20 +293,6 @@ final class SessionLauncherService: ObservableObject {
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
-}
-
-/// Subset of the JSON Claude writes to `~/.claude/sessions/<pid>.json`.
-/// Fields beyond `sessionId` are optional in case the schema shifts across
-/// Claude versions.
-private struct ClaudeSessionFile: Decodable {
-    let sessionId: String
-    let pid: Int32?
-    let cwd: String?
-    let status: String?
-    let updatedAt: Int64?
-    let kind: String?
-    let entrypoint: String?
-    let version: String?
 }
 
 private extension URL {

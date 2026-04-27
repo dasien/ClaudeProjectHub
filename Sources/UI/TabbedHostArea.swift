@@ -5,7 +5,7 @@ struct TabbedHostArea: View {
     @EnvironmentObject private var windowManager: WindowManager
 
     private var runningSessions: [Session] {
-        store.sessions.filter { $0.status == .running }
+        store.sessions.filter { $0.status.isRunning }
     }
 
     var body: some View {

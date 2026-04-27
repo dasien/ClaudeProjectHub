@@ -28,7 +28,7 @@ struct SessionRow: View {
     @ViewBuilder
     private var timeText: some View {
         switch session.status {
-        case .running:
+        case .idle, .working:
             // SwiftUI's `.relative` style auto-ticks via an internal timer —
             // good for live sessions, wrong for closed ones (they'd keep
             // counting up forever).
@@ -38,16 +38,24 @@ struct SessionRow: View {
         }
     }
 
+    @ViewBuilder
     private var statusDot: some View {
-        Circle()
-            .fill(statusColor)
-            .frame(width: 8, height: 8)
-    }
-
-    private var statusColor: Color {
+        // working: solid green (claude is processing)
+        // idle: hollow green (alive, waiting for input)
+        // closed: solid grey
         switch session.status {
-        case .running: return .green
-        case .closed: return .secondary
+        case .working:
+            Circle()
+                .fill(Color.green)
+                .frame(width: 8, height: 8)
+        case .idle:
+            Circle()
+                .strokeBorder(Color.green, lineWidth: 1.5)
+                .frame(width: 8, height: 8)
+        case .closed:
+            Circle()
+                .fill(Color.secondary)
+                .frame(width: 8, height: 8)
         }
     }
 }

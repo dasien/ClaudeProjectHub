@@ -12,7 +12,7 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_IDENTITY: "Apple Development"
     CODE_SIGN_STYLE: Automatic
-    DEVELOPMENT_TEAM: "96XM6877Y5"
+    DEVELOPMENT_TEAM: "G5GR8NMG5U"
 targets:
   ClaudeProjectHub:
     type: application

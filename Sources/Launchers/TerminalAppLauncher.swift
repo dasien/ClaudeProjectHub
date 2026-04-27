@@ -98,8 +98,6 @@ struct TerminalAppLauncher: SessionLauncher {
                   let targetWindow = resolveAXWindow(matching: cgID, in: terminalPID) else {
                 throw LauncherError.targetWindowMissing
             }
-            let title = AXSupport.title(of: targetWindow) ?? "<no title>"
-            print("[TerminalAppLauncher] raising AX window cgID=\(cgID) title=\(title)")
             AXSupport.raise(targetWindow)
         }
 
@@ -107,7 +105,6 @@ struct TerminalAppLauncher: SessionLauncher {
         // the keystroke fires. AX raise is synchronous from the app's
         // perspective but OS focus update can lag a frame or two.
         try await Task.sleep(nanoseconds: 200_000_000)
-        print("[TerminalAppLauncher] running AppleScript for mode=\(mode)")
 
         let keystroke = (mode == .newTab) ? "t" : "n"
         let unit = (mode == .newTab) ? "tab" : "window"
@@ -167,24 +164,7 @@ struct TerminalAppLauncher: SessionLauncher {
             end tell
         end repeat
         if foundWindowID is 0 then
-            set diag to "initial=["
-            repeat with j from 1 to count of initialMap
-                set entry to item j of initialMap
-                set diag to diag & "w" & (item 1 of entry) & "=" & (item 2 of entry)
-                if j < (count of initialMap) then set diag to diag & ","
-            end repeat
-            set diag to diag & "] current=["
-            tell application "Terminal"
-                set wlist to windows
-                set wcount to count of wlist
-                repeat with k from 1 to wcount
-                    set w to item k of wlist
-                    set diag to diag & "w" & (id of w) & "=" & (count of tabs of w)
-                    if k < wcount then set diag to diag & ","
-                end repeat
-            end tell
-            set diag to diag & "]"
-            error "Could not detect a new \(unit) after Cmd-\(keystroke.uppercased()). " & diag
+            error "Could not detect a new \(unit) after Cmd-\(keystroke.uppercased()). Check Terminal's keyboard shortcuts."
         end if
         tell application "Terminal"
             set foundWindow to (first window whose id is foundWindowID)

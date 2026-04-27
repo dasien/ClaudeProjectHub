@@ -13,6 +13,12 @@ settings:
     CODE_SIGN_IDENTITY: "Apple Development"
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: "G5GR8NMG5U"
+    # Xcode 16 "recommended settings" that xcodegen doesn't include by
+    # default. Setting them here keeps the "Update to recommended settings"
+    # prompt from reappearing on every regen.
+    DEAD_CODE_STRIPPING: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+    STRING_CATALOG_GENERATE_SYMBOLS: YES
 targets:
   ClaudeProjectHub:
     type: application

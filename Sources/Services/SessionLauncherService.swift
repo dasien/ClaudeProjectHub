@@ -110,15 +110,25 @@ final class SessionLauncherService: ObservableObject {
         // a session and closed it without typing anything, `--resume` errors
         // with "No conversation found". Catch that case here with a clearer
         // message instead of dumping the error into a fresh Terminal window.
-        let jsonl = jsonlPath(for: session.cwd, sessionId: claudeSessionId)
-        if !FileManager.default.fileExists(atPath: jsonl.path) {
-            presentError(LauncherError.launchFailed(
-                "This session has no recorded conversation to resume. " +
-                "Claude only writes the transcript once the first message " +
-                "is exchanged, and this session was closed before that " +
-                "happened. Start a new session in this directory instead."
-            ))
-            return false
+        // Also self-heal: pre-fix builds overwrote claudeSessionId on every
+        // resume with the resumed process's new id (which has no JSONL),
+        // leaving records that can't be resumed. If we can unambiguously
+        // identify the right JSONL in the cwd's directory, recover it.
+        var resumedSessionId = claudeSessionId
+        let initialJsonl = jsonlPath(for: session.cwd, sessionId: resumedSessionId)
+        if !FileManager.default.fileExists(atPath: initialJsonl.path) {
+            if let recovered = recoverSessionId(for: session.cwd) {
+                resumedSessionId = recovered
+                store.update(id: session.id) { $0.claudeSessionId = recovered }
+            } else {
+                presentError(LauncherError.launchFailed(
+                    "This session has no recorded conversation to resume. " +
+                    "Claude only writes the transcript once the first message " +
+                    "is exchanged, and this session was closed before that " +
+                    "happened. Start a new session in this directory instead."
+                ))
+                return false
+            }
         }
 
         let targetWindowID: CGWindowID? = targetSessionID.flatMap {
@@ -136,7 +146,7 @@ final class SessionLauncherService: ObservableObject {
                 in: session.cwd,
                 mode: windowMode,
                 targetWindowID: targetWindowID,
-                claudeArgs: ["--resume", claudeSessionId]
+                claudeArgs: ["--resume", resumedSessionId]
             )
             // Reuse the existing Session record instead of adding a new one.
             store.update(id: session.id) {
@@ -183,7 +193,17 @@ final class SessionLauncherService: ObservableObject {
         if let claudePID = await waitForNewClaudePID(baseline: baselinePIDs) {
             store.update(id: sessionID) { $0.pid = claudePID }
             if let sessionFile = await readClaudeSessionFile(pid: claudePID) {
-                store.update(id: sessionID) { $0.claudeSessionId = sessionFile.sessionId }
+                // Set-once: `claude --resume <id>` assigns a NEW sessionId to
+                // the resumed process (visible in ~/.claude/sessions/<pid>.json),
+                // but the conversation continues to be written to the ORIGINAL
+                // session's JSONL. Overwriting here would point the record at
+                // a process-only id that has no JSONL of its own, breaking the
+                // next Resume.
+                store.update(id: sessionID) {
+                    if $0.claudeSessionId == nil {
+                        $0.claudeSessionId = sessionFile.sessionId
+                    }
+                }
             }
         }
     }
@@ -251,6 +271,22 @@ final class SessionLauncherService: ObservableObject {
     private func jsonlPath(for cwd: URL, sessionId: String) -> URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects/\(cwd.claudeProjectsDirectoryName)/\(sessionId).jsonl")
+    }
+
+    /// Used to repair sessions whose `claudeSessionId` was clobbered by an
+    /// earlier bug where every resume overwrote it with the resumed
+    /// process's id. Returns a recovered sessionId only when there's
+    /// exactly one JSONL in the cwd's encoded directory, so we never
+    /// silently pick the wrong one.
+    private func recoverSessionId(for cwd: URL) -> String? {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects/\(cwd.claudeProjectsDirectoryName)")
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil
+        ) else { return nil }
+        let jsonls = contents.filter { $0.pathExtension == "jsonl" }
+        return jsonls.count == 1 ? jsonls.first?.deletingPathExtension().lastPathComponent : nil
     }
 
     // MARK: - Permission + error UI

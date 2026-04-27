@@ -7,15 +7,13 @@ import SwiftUI
 final class SessionLauncherService: ObservableObject {
     private let store: SessionStore
     private let windowManager: WindowManager
-    private let launchers: [HostKind: SessionLauncher]
+    private let hostRegistry: HostRegistry
     private var hasRequestedAccessibility = false
 
-    init(store: SessionStore, windowManager: WindowManager) {
+    init(store: SessionStore, windowManager: WindowManager, hostRegistry: HostRegistry) {
         self.store = store
         self.windowManager = windowManager
-        self.launchers = [
-            .terminalApp: TerminalAppLauncher()
-        ]
+        self.hostRegistry = hostRegistry
     }
 
     /// Checks Accessibility access and either returns true (proceed) or
@@ -37,12 +35,19 @@ final class SessionLauncherService: ObservableObject {
     func launch(
         name: String?,
         cwd: URL,
-        hostKind: HostKind,
+        hostID: String,
         windowMode: WindowMode,
         targetSessionID: Session.ID?
     ) async -> Bool {
-        guard let launcher = launchers[hostKind] else {
-            presentError(LauncherError.hostNotInstalled(hostKind.displayName))
+        guard let config = hostRegistry.host(forID: hostID) else {
+            presentError(LauncherError.unknownHost(hostID))
+            return false
+        }
+        let launcher: SessionLauncher
+        do {
+            launcher = try makeLauncher(for: config)
+        } catch {
+            presentError(error)
             return false
         }
 
@@ -65,15 +70,19 @@ final class SessionLauncherService: ObservableObject {
                 targetWindowID: targetWindowID,
                 claudeArgs: []
             )
-            var session = result.session
-            session.name = name?.isEmpty == false ? name : nil
+            let session = Session(
+                name: name?.isEmpty == false ? name : nil,
+                cwd: cwd,
+                hostID: hostID,
+                status: .idle
+            )
             store.add(session)
 
             Task { [weak self] in
                 await self?.discoverAndBind(
                     marker: result.marker,
                     sessionID: session.id,
-                    hostKind: hostKind,
+                    bundleIdentifier: config.bundleIdentifier,
                     baselinePIDs: baselinePIDs
                 )
             }
@@ -100,8 +109,15 @@ final class SessionLauncherService: ObservableObject {
             presentError(LauncherError.missingClaudeSessionId)
             return false
         }
-        guard let launcher = launchers[session.hostKind] else {
-            presentError(LauncherError.hostNotInstalled(session.hostKind.displayName))
+        guard let config = hostRegistry.host(forID: session.hostID) else {
+            presentError(LauncherError.unknownHost(session.hostID))
+            return false
+        }
+        let launcher: SessionLauncher
+        do {
+            launcher = try makeLauncher(for: config)
+        } catch {
+            presentError(error)
             return false
         }
 
@@ -160,7 +176,7 @@ final class SessionLauncherService: ObservableObject {
                 await self?.discoverAndBind(
                     marker: result.marker,
                     sessionID: session.id,
-                    hostKind: session.hostKind,
+                    bundleIdentifier: config.bundleIdentifier,
                     baselinePIDs: baselinePIDs
                 )
             }
@@ -171,17 +187,35 @@ final class SessionLauncherService: ObservableObject {
         }
     }
 
+    // MARK: - Strategy dispatch
+
+    private func makeLauncher(for config: HostConfig) throws -> SessionLauncher {
+        switch config.strategy {
+        case .builtin(let kind):
+            switch kind {
+            case .terminalApp:
+                return TerminalAppLauncher()
+            }
+        case .process:
+            // Wired up in M7 alongside the first process-strategy host.
+            throw LauncherError.unsupportedStrategy(
+                "process-strategy hosts (\"\(config.displayName)\") aren't launchable yet"
+            )
+        }
+    }
+
     // MARK: - Post-launch discovery
 
     private func discoverAndBind(
         marker: String,
         sessionID: Session.ID,
-        hostKind: HostKind,
+        bundleIdentifier: String?,
         baselinePIDs: Set<pid_t>
     ) async {
-        guard let pid = NSWorkspace.shared.runningApplications.first(where: {
-            $0.bundleIdentifier == hostKind.bundleIdentifier
-        })?.processIdentifier else { return }
+        guard let bundleIdentifier,
+              let pid = NSWorkspace.shared.runningApplications.first(where: {
+                  $0.bundleIdentifier == bundleIdentifier
+              })?.processIdentifier else { return }
 
         guard let window = await AXSupport.findWindow(forMarker: marker, in: pid, timeout: 5) else {
             presentError(LauncherError.windowNotFound("timed out finding host window"))

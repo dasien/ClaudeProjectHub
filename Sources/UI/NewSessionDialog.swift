@@ -4,14 +4,20 @@ import SwiftUI
 struct NewSessionDialog: View {
     @EnvironmentObject private var launcher: SessionLauncherService
     @EnvironmentObject private var store: SessionStore
+    @EnvironmentObject private var hostRegistry: HostRegistry
     @Environment(\.dismiss) private var dismiss
 
     @State private var name: String = ""
     @State private var cwd: URL?
+    @State private var hostID: String = "terminal-app"
     @State private var windowMode: WindowMode = .newWindow
     @State private var targetSessionID: Session.ID?
     @State private var isLaunching = false
     @FocusState private var nameFocused: Bool
+
+    private var selectedHost: HostConfig? {
+        hostRegistry.host(forID: hostID)
+    }
 
     private var runningSessions: [Session] {
         store.sessions
@@ -19,7 +25,9 @@ struct NewSessionDialog: View {
             .sorted { $0.lastActivityAt > $1.lastActivityAt }
     }
 
-    private var canUseNewTab: Bool { !runningSessions.isEmpty }
+    private var canUseNewTab: Bool {
+        (selectedHost?.supportsNewTab ?? false) && !runningSessions.isEmpty
+    }
 
     private var canLaunch: Bool {
         guard cwd != nil, !isLaunching else { return false }
@@ -27,9 +35,10 @@ struct NewSessionDialog: View {
         return true
     }
 
-    private var isTerminalRunning: Bool {
-        NSWorkspace.shared.runningApplications.contains {
-            $0.bundleIdentifier == HostKind.terminalApp.bundleIdentifier
+    private var isHostRunning: Bool {
+        guard let bundleID = selectedHost?.bundleIdentifier else { return false }
+        return NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == bundleID
         }
     }
 
@@ -54,8 +63,18 @@ struct NewSessionDialog: View {
                 }
             }
 
+            field(label: "Host") {
+                Picker("", selection: $hostID) {
+                    ForEach(hostRegistry.hosts) { host in
+                        Text(host.displayName).tag(host.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+            }
+
             field(label: "Open in") {
-                if isTerminalRunning {
+                if isHostRunning {
                     Picker("", selection: $windowMode) {
                         Text(WindowMode.newWindow.displayName).tag(WindowMode.newWindow)
                         if canUseNewTab {
@@ -79,7 +98,7 @@ struct NewSessionDialog: View {
                 } else {
                     Text(WindowMode.newWindow.displayName)
                         .foregroundStyle(.secondary)
-                        .help("Terminal isn't running yet, so a new window will be opened.")
+                        .help("\(selectedHost?.displayName ?? "This host") isn't running, so a new window will be opened.")
                 }
             }
 
@@ -95,7 +114,15 @@ struct NewSessionDialog: View {
         }
         .padding(20)
         .frame(width: 480)
-        .onAppear { nameFocused = true }
+        .onAppear {
+            nameFocused = true
+            // Default to the first host in the registry if our seed value
+            // isn't there (e.g. user removed terminal-app from hosts.json).
+            if hostRegistry.host(forID: hostID) == nil,
+               let first = hostRegistry.hosts.first {
+                hostID = first.id
+            }
+        }
     }
 
     @ViewBuilder
@@ -123,13 +150,13 @@ struct NewSessionDialog: View {
     private func launch() {
         guard let cwd = cwd else { return }
         isLaunching = true
-        let mode = isTerminalRunning ? windowMode : .newWindow
+        let mode = isHostRunning ? windowMode : .newWindow
         let target = (mode == .newTab) ? targetSessionID : nil
         Task {
             let success = await launcher.launch(
                 name: name,
                 cwd: cwd,
-                hostKind: .terminalApp,
+                hostID: hostID,
                 windowMode: mode,
                 targetSessionID: target
             )

@@ -97,19 +97,19 @@ extension SessionStore {
         store.sessions = [
             Session(
                 cwd: URL(fileURLWithPath: "/Users/bgentry/Source/repos/server"),
-                hostKind: .terminalApp,
+                hostID: "terminal-app",
                 status: .working,
                 lastActivityAt: Date().addingTimeInterval(-60)
             ),
             Session(
                 cwd: URL(fileURLWithPath: "/Users/bgentry/Source/repos/web"),
-                hostKind: .terminalApp,
+                hostID: "terminal-app",
                 status: .idle,
                 lastActivityAt: Date().addingTimeInterval(-15 * 60)
             ),
             Session(
                 cwd: URL(fileURLWithPath: "/Users/bgentry/Source/repos/clients"),
-                hostKind: .terminalApp,
+                hostID: "terminal-app",
                 status: .closed,
                 lastActivityAt: Date().addingTimeInterval(-2 * 3600)
             )

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SessionRow: View {
     let session: Session
+    @EnvironmentObject private var hostRegistry: HostRegistry
 
     var body: some View {
         HStack(spacing: 10) {
@@ -11,7 +12,7 @@ struct SessionRow: View {
                     .font(.headline)
                     .lineLimit(1)
                 HStack(spacing: 6) {
-                    Text(session.hostKind.displayName)
+                    Text(hostRegistry.displayName(forID: session.hostID))
                     Text("·")
                     timeText
                 }

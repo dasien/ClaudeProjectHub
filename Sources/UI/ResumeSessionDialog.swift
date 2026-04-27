@@ -5,11 +5,16 @@ struct ResumeSessionDialog: View {
     let session: Session
     @EnvironmentObject private var store: SessionStore
     @EnvironmentObject private var launcher: SessionLauncherService
+    @EnvironmentObject private var hostRegistry: HostRegistry
     @Environment(\.dismiss) private var dismiss
 
     @State private var windowMode: WindowMode = .newWindow
     @State private var targetSessionID: Session.ID?
     @State private var isResuming = false
+
+    private var hostConfig: HostConfig? {
+        hostRegistry.host(forID: session.hostID)
+    }
 
     private var runningSessions: [Session] {
         // Exclude this session itself in case it's somehow running.
@@ -18,13 +23,16 @@ struct ResumeSessionDialog: View {
             .sorted { $0.lastActivityAt > $1.lastActivityAt }
     }
 
-    private var isTerminalRunning: Bool {
-        NSWorkspace.shared.runningApplications.contains {
-            $0.bundleIdentifier == HostKind.terminalApp.bundleIdentifier
+    private var isHostRunning: Bool {
+        guard let bundleID = hostConfig?.bundleIdentifier else { return false }
+        return NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == bundleID
         }
     }
 
-    private var canUseNewTab: Bool { isTerminalRunning && !runningSessions.isEmpty }
+    private var canUseNewTab: Bool {
+        (hostConfig?.supportsNewTab ?? false) && isHostRunning && !runningSessions.isEmpty
+    }
 
     private var canResume: Bool {
         guard !isResuming else { return false }
@@ -48,7 +56,7 @@ struct ResumeSessionDialog: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Open in").font(.subheadline).foregroundStyle(.secondary)
-                if isTerminalRunning {
+                if isHostRunning {
                     Picker("", selection: $windowMode) {
                         Text(WindowMode.newWindow.displayName).tag(WindowMode.newWindow)
                         if canUseNewTab {
@@ -72,7 +80,7 @@ struct ResumeSessionDialog: View {
                 } else {
                     Text(WindowMode.newWindow.displayName)
                         .foregroundStyle(.secondary)
-                        .help("Terminal isn't running, so a new window will be opened.")
+                        .help("\(hostConfig?.displayName ?? "This host") isn't running, so a new window will be opened.")
                 }
             }
 
@@ -92,7 +100,7 @@ struct ResumeSessionDialog: View {
 
     private func startResume() {
         isResuming = true
-        let mode = isTerminalRunning ? windowMode : .newWindow
+        let mode = isHostRunning ? windowMode : .newWindow
         let target = (mode == .newTab) ? targetSessionID : nil
         Task {
             let success = await launcher.resume(

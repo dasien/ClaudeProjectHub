@@ -3,6 +3,7 @@ import SwiftUI
 struct TabbedHostArea: View {
     @EnvironmentObject private var store: SessionStore
     @EnvironmentObject private var windowManager: WindowManager
+    @EnvironmentObject private var hostRegistry: HostRegistry
 
     private var runningSessions: [Session] {
         store.sessions.filter { $0.status.isRunning }
@@ -51,7 +52,7 @@ struct TabbedHostArea: View {
                     Text(session.displayPath)
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    Text("Session is running in its own \(session.hostKind.displayName) window.")
+                    Text("Session is running in its own \(hostRegistry.displayName(forID: session.hostID)) window.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.top, 4)

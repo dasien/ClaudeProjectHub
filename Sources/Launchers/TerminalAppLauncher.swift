@@ -3,10 +3,11 @@ import ApplicationServices
 import CoreGraphics
 
 struct TerminalAppLauncher: SessionLauncher {
-    let hostKind: HostKind = .terminalApp
+    private let bundleIdentifier = "com.apple.Terminal"
+    private let displayName = "Terminal"
 
     func isAvailable() -> Bool {
-        NSWorkspace.shared.urlForApplication(withBundleIdentifier: hostKind.bundleIdentifier) != nil
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) != nil
     }
 
     func launch(
@@ -16,7 +17,7 @@ struct TerminalAppLauncher: SessionLauncher {
         claudeArgs: [String]
     ) async throws -> LaunchResult {
         guard isAvailable() else {
-            throw LauncherError.hostNotInstalled(hostKind.displayName)
+            throw LauncherError.hostNotInstalled(displayName)
         }
 
         let marker = "ClaudeProjectHub-\(UUID().uuidString)"
@@ -25,7 +26,7 @@ struct TerminalAppLauncher: SessionLauncher {
         let runCommand = "cd \(cwdEscaped) && \(claudeCommand)"
 
         let wasRunning = NSWorkspace.shared.runningApplications.contains {
-            $0.bundleIdentifier == hostKind.bundleIdentifier
+            $0.bundleIdentifier == bundleIdentifier
         }
 
         if !wasRunning {
@@ -39,12 +40,7 @@ struct TerminalAppLauncher: SessionLauncher {
             )
         }
 
-        let session = Session(
-            cwd: cwd,
-            hostKind: hostKind,
-            status: .idle
-        )
-        return LaunchResult(session: session, marker: marker)
+        return LaunchResult(marker: marker)
     }
 
     // MARK: - Cold start (Terminal not running)
@@ -77,7 +73,7 @@ struct TerminalAppLauncher: SessionLauncher {
         marker: String
     ) async throws {
         guard let terminalPID = NSWorkspace.shared.runningApplications.first(where: {
-            $0.bundleIdentifier == hostKind.bundleIdentifier
+            $0.bundleIdentifier == bundleIdentifier
         })?.processIdentifier else {
             throw LauncherError.launchFailed("Terminal is no longer running.")
         }

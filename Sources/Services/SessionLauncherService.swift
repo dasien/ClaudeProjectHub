@@ -54,9 +54,9 @@ final class SessionLauncherService: ObservableObject {
             return false
         }
 
-        // Snapshot before launch so post-launch diffs identify what's new.
+        // Snapshot existing claude PIDs before launch so we can identify the
+        // new one we just started.
         let baselinePIDs = await currentClaudePIDs()
-        let baselineJSONLs = currentClaudeJSONLs(for: cwd)
 
         do {
             let result = try await launcher.launch(
@@ -74,9 +74,7 @@ final class SessionLauncherService: ObservableObject {
                     marker: result.marker,
                     sessionID: session.id,
                     hostKind: hostKind,
-                    cwd: cwd,
-                    baselinePIDs: baselinePIDs,
-                    baselineJSONLs: baselineJSONLs
+                    baselinePIDs: baselinePIDs
                 )
             }
             return true
@@ -125,9 +123,7 @@ final class SessionLauncherService: ObservableObject {
                     marker: result.marker,
                     sessionID: session.id,
                     hostKind: session.hostKind,
-                    cwd: session.cwd,
-                    baselinePIDs: baselinePIDs,
-                    baselineJSONLs: nil  // claudeSessionId already known
+                    baselinePIDs: baselinePIDs
                 )
             }
             return true
@@ -143,9 +139,7 @@ final class SessionLauncherService: ObservableObject {
         marker: String,
         sessionID: Session.ID,
         hostKind: HostKind,
-        cwd: URL,
-        baselinePIDs: Set<pid_t>,
-        baselineJSONLs: Set<URL>?
+        baselinePIDs: Set<pid_t>
     ) async {
         guard let pid = NSWorkspace.shared.runningApplications.first(where: {
             $0.bundleIdentifier == hostKind.bundleIdentifier
@@ -158,16 +152,18 @@ final class SessionLauncherService: ObservableObject {
 
         windowManager.bind(window, to: sessionID)
 
+        // Capture the new claude PID, then read its sessions metadata file
+        // to grab the Claude session UUID. The file at
+        // `~/.claude/sessions/<pid>.json` is the authoritative per-process
+        // record Claude maintains; it has sessionId, cwd, status, and a
+        // live updatedAt — much more reliable than diffing the JSONL
+        // directory and the canonical source for future external-session
+        // adoption and idle/working detection.
         if let claudePID = await waitForNewClaudePID(baseline: baselinePIDs) {
             store.update(id: sessionID) { $0.pid = claudePID }
-        }
-
-        // Skipped on resume — the session already has a claudeSessionId and
-        // `claude --resume` appends to the existing JSONL rather than
-        // creating a new one, so the diff would never find a "new" file.
-        if let baseline = baselineJSONLs,
-           let claudeSessionId = await captureClaudeSessionID(for: cwd, baseline: baseline) {
-            store.update(id: sessionID) { $0.claudeSessionId = claudeSessionId }
+            if let sessionFile = await readClaudeSessionFile(pid: claudePID) {
+                store.update(id: sessionID) { $0.claudeSessionId = sessionFile.sessionId }
+            }
         }
     }
 
@@ -206,46 +202,27 @@ final class SessionLauncherService: ObservableObject {
         return Set(output.split(separator: "\n").compactMap { pid_t($0) })
     }
 
-    // MARK: - claudeSessionId discovery
+    // MARK: - Claude sessions file
 
-    /// Snapshot of the JSONL files currently in `~/.claude/projects/<encoded>/`
-    /// for this cwd. Used as a baseline so we can identify the new file the
-    /// freshly-launched `claude` will create.
-    private func currentClaudeJSONLs(for cwd: URL) -> Set<URL> {
-        let dir = claudeProjectsDirectory(for: cwd)
-        guard let contents = try? FileManager.default.contentsOfDirectory(
-            at: dir,
-            includingPropertiesForKeys: nil
-        ) else { return [] }
-        return Set(contents.filter { $0.pathExtension == "jsonl" })
-    }
-
-    private func captureClaudeSessionID(
-        for cwd: URL,
-        baseline: Set<URL>,
-        timeout: TimeInterval = 15
-    ) async -> String? {
-        let dir = claudeProjectsDirectory(for: cwd)
+    /// Reads `~/.claude/sessions/<pid>.json`, polling briefly because the
+    /// file might not exist the very first millisecond after the PID
+    /// appears. Returns nil on timeout.
+    private func readClaudeSessionFile(
+        pid: pid_t,
+        timeout: TimeInterval = 5
+    ) async -> ClaudeSessionFile? {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/sessions/\(pid).json")
         let deadline = Date().addingTimeInterval(timeout)
+        let decoder = JSONDecoder()
         while Date() < deadline {
-            if let contents = try? FileManager.default.contentsOfDirectory(
-                at: dir,
-                includingPropertiesForKeys: nil
-            ) {
-                let jsonls = Set(contents.filter { $0.pathExtension == "jsonl" })
-                if let new = jsonls.subtracting(baseline).first {
-                    return new.deletingPathExtension().lastPathComponent
-                }
+            if let data = try? Data(contentsOf: url),
+               let file = try? decoder.decode(ClaudeSessionFile.self, from: data) {
+                return file
             }
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            try? await Task.sleep(nanoseconds: 200_000_000)
         }
         return nil
-    }
-
-    private func claudeProjectsDirectory(for cwd: URL) -> URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home
-            .appendingPathComponent(".claude/projects/\(cwd.claudeProjectsDirectoryName)")
     }
 
     // MARK: - Permission + error UI
@@ -277,20 +254,16 @@ final class SessionLauncherService: ObservableObject {
     }
 }
 
-private extension URL {
-    /// Filename Claude uses for this directory under `~/.claude/projects/`.
-    /// Per Claude's convention: every non-alphanumeric (ASCII) character is
-    /// replaced with `-`. So `/Users/me/Source/foo` becomes
-    /// `-Users-me-Source-foo`.
-    var claudeProjectsDirectoryName: String {
-        var result = ""
-        for char in standardizedFileURL.path {
-            if char.isASCII && (char.isLetter || char.isNumber) {
-                result.append(char)
-            } else {
-                result.append("-")
-            }
-        }
-        return result
-    }
+/// Subset of the JSON Claude writes to `~/.claude/sessions/<pid>.json`.
+/// Fields beyond `sessionId` are optional in case the schema shifts across
+/// Claude versions.
+private struct ClaudeSessionFile: Decodable {
+    let sessionId: String
+    let pid: Int32?
+    let cwd: String?
+    let status: String?
+    let updatedAt: Int64?
+    let kind: String?
+    let entrypoint: String?
+    let version: String?
 }

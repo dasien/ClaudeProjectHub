@@ -12,33 +12,29 @@ struct TerminalAppLauncher: SessionLauncher {
     func launch(
         in cwd: URL,
         mode: WindowMode,
-        targetWindowID: CGWindowID?
+        targetWindowID: CGWindowID?,
+        claudeArgs: [String]
     ) async throws -> LaunchResult {
         guard isAvailable() else {
             throw LauncherError.hostNotInstalled(hostKind.displayName)
         }
 
         let marker = "ClaudeProjectHub-\(UUID().uuidString)"
-        let cwdEscaped = cwd.path.replacingOccurrences(of: "'", with: "'\\''")
+        let cwdEscaped = shellQuote(cwd.path)
+        let claudeCommand = buildClaudeCommand(args: claudeArgs)
+        let runCommand = "cd \(cwdEscaped) && \(claudeCommand)"
 
         let wasRunning = NSWorkspace.shared.runningApplications.contains {
             $0.bundleIdentifier == hostKind.bundleIdentifier
         }
 
         if !wasRunning {
-            // Cold start: AppleScript activates Terminal, which opens its
-            // startup window per user prefs. Run the command in that window's
-            // existing tab so we don't end up with two windows.
-            try AppleScriptRunner.run(coldStartScript(cwdEscaped: cwdEscaped, marker: marker))
+            try AppleScriptRunner.run(coldStartScript(runCommand: runCommand, marker: marker))
         } else {
-            // Warm start: drive tab/window creation via AX (menu item press)
-            // for determinism — System Events keystrokes depend on OS focus
-            // propagation that's racy with `set index of window to 1`. AX
-            // menu press operates on the app's internal state directly.
             try await warmStart(
                 mode: mode,
                 targetWindowID: targetWindowID,
-                cwdEscaped: cwdEscaped,
+                runCommand: runCommand,
                 marker: marker
             )
         }
@@ -53,7 +49,7 @@ struct TerminalAppLauncher: SessionLauncher {
 
     // MARK: - Cold start (Terminal not running)
 
-    private func coldStartScript(cwdEscaped: String, marker: String) -> String {
+    private func coldStartScript(runCommand: String, marker: String) -> String {
         """
         tell application "Terminal"
             activate
@@ -63,9 +59,9 @@ struct TerminalAppLauncher: SessionLauncher {
                 set tries to tries + 1
             end repeat
             if (count of windows) > 0 then
-                set newTab to do script "cd '\(cwdEscaped)' && claude" in (selected tab of window 1)
+                set newTab to do script "\(runCommand)" in (selected tab of window 1)
             else
-                set newTab to do script "cd '\(cwdEscaped)' && claude"
+                set newTab to do script "\(runCommand)"
             end if
             set custom title of newTab to "\(marker)"
         end tell
@@ -77,7 +73,7 @@ struct TerminalAppLauncher: SessionLauncher {
     private func warmStart(
         mode: WindowMode,
         targetWindowID: CGWindowID?,
-        cwdEscaped: String,
+        runCommand: String,
         marker: String
     ) async throws {
         guard let terminalPID = NSWorkspace.shared.runningApplications.first(where: {
@@ -168,7 +164,7 @@ struct TerminalAppLauncher: SessionLauncher {
         end if
         tell application "Terminal"
             set foundWindow to (first window whose id is foundWindowID)
-            set newTab to do script "cd '\(cwdEscaped)' && claude" in (selected tab of foundWindow)
+            set newTab to do script "\(runCommand)" in (selected tab of foundWindow)
             set custom title of newTab to "\(marker)"
         end tell
         """
@@ -177,5 +173,20 @@ struct TerminalAppLauncher: SessionLauncher {
 
     private func resolveAXWindow(matching cgID: CGWindowID, in pid: pid_t) -> AXUIElement? {
         AXSupport.windows(of: pid).first { AXSupport.windowID(of: $0) == cgID }
+    }
+
+    // MARK: - Shell command building
+
+    private func buildClaudeCommand(args: [String]) -> String {
+        guard !args.isEmpty else { return "claude" }
+        let escaped = args.map { shellQuote($0) }.joined(separator: " ")
+        return "claude \(escaped)"
+    }
+
+    /// Shell-quote a string so it survives intact through `do script` →
+    /// AppleScript string literal → bash. Wraps in single quotes and escapes
+    /// any literal single quotes within.
+    private func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

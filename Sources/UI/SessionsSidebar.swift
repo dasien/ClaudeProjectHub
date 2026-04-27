@@ -64,9 +64,9 @@ struct SessionsSidebar: View {
             }
         case .closed:
             Button("Resume") {
-                // Future: claude --resume <id> on hostKind in cwd
+                Task { await launcher.resume(session) }
             }
-            .disabled(true)
+            .disabled(session.claudeSessionId == nil)
             Button("Rename…") { sessionToRename = session }
             Divider()
             Button("Remove from List", role: .destructive) {

@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import Darwin
 import SwiftUI
 
@@ -45,8 +46,6 @@ final class SessionLauncherService: ObservableObject {
             return false
         }
 
-        // Resolve the target session (if any) to a CGWindowID. Required when
-        // mode == .newTab; the launcher will surface a clear error if missing.
         let targetWindowID: CGWindowID? = targetSessionID.flatMap {
             windowManager.windowID(for: $0)
         }
@@ -55,15 +54,16 @@ final class SessionLauncherService: ObservableObject {
             return false
         }
 
-        // Snapshot the set of running `claude` PIDs *before* launch so the
-        // post-launch diff identifies the new one we just started.
+        // Snapshot before launch so post-launch diffs identify what's new.
         let baselinePIDs = await currentClaudePIDs()
+        let baselineJSONLs = currentClaudeJSONLs(for: cwd)
 
         do {
             let result = try await launcher.launch(
                 in: cwd,
                 mode: windowMode,
-                targetWindowID: targetWindowID
+                targetWindowID: targetWindowID,
+                claudeArgs: []
             )
             var session = result.session
             session.name = name?.isEmpty == false ? name : nil
@@ -74,7 +74,9 @@ final class SessionLauncherService: ObservableObject {
                     marker: result.marker,
                     sessionID: session.id,
                     hostKind: hostKind,
-                    baselinePIDs: baselinePIDs
+                    cwd: cwd,
+                    baselinePIDs: baselinePIDs,
+                    baselineJSONLs: baselineJSONLs
                 )
             }
             return true
@@ -84,11 +86,66 @@ final class SessionLauncherService: ObservableObject {
         }
     }
 
+    /// Reactivates a closed session by relaunching `claude --resume <id>` in
+    /// the original cwd via the original host. The same Session record is
+    /// reused — its status flips back to running and it gets a new host
+    /// window. The claudeSessionId is unchanged because `--resume` continues
+    /// the same conversation.
+    @discardableResult
+    func resume(_ session: Session) async -> Bool {
+        guard session.status == .closed else { return false }
+        guard let claudeSessionId = session.claudeSessionId else {
+            presentError(LauncherError.missingClaudeSessionId)
+            return false
+        }
+        guard let launcher = launchers[session.hostKind] else {
+            presentError(LauncherError.hostNotInstalled(session.hostKind.displayName))
+            return false
+        }
+
+        let baselinePIDs = await currentClaudePIDs()
+
+        do {
+            let result = try await launcher.launch(
+                in: session.cwd,
+                mode: .newWindow,
+                targetWindowID: nil,
+                claudeArgs: ["--resume", claudeSessionId]
+            )
+            // Reuse the existing Session record instead of adding a new one.
+            store.update(id: session.id) {
+                $0.status = .running
+                $0.pid = nil
+                $0.lastActivityAt = Date()
+            }
+            store.selectedSessionID = session.id
+
+            Task { [weak self] in
+                await self?.discoverAndBind(
+                    marker: result.marker,
+                    sessionID: session.id,
+                    hostKind: session.hostKind,
+                    cwd: session.cwd,
+                    baselinePIDs: baselinePIDs,
+                    baselineJSONLs: nil  // claudeSessionId already known
+                )
+            }
+            return true
+        } catch {
+            presentError(error)
+            return false
+        }
+    }
+
+    // MARK: - Post-launch discovery
+
     private func discoverAndBind(
         marker: String,
         sessionID: Session.ID,
         hostKind: HostKind,
-        baselinePIDs: Set<pid_t>
+        cwd: URL,
+        baselinePIDs: Set<pid_t>,
+        baselineJSONLs: Set<URL>?
     ) async {
         guard let pid = NSWorkspace.shared.runningApplications.first(where: {
             $0.bundleIdentifier == hostKind.bundleIdentifier
@@ -103,6 +160,14 @@ final class SessionLauncherService: ObservableObject {
 
         if let claudePID = await waitForNewClaudePID(baseline: baselinePIDs) {
             store.update(id: sessionID) { $0.pid = claudePID }
+        }
+
+        // Skipped on resume — the session already has a claudeSessionId and
+        // `claude --resume` appends to the existing JSONL rather than
+        // creating a new one, so the diff would never find a "new" file.
+        if let baseline = baselineJSONLs,
+           let claudeSessionId = await captureClaudeSessionID(for: cwd, baseline: baseline) {
+            store.update(id: sessionID) { $0.claudeSessionId = claudeSessionId }
         }
     }
 
@@ -141,6 +206,48 @@ final class SessionLauncherService: ObservableObject {
         return Set(output.split(separator: "\n").compactMap { pid_t($0) })
     }
 
+    // MARK: - claudeSessionId discovery
+
+    /// Snapshot of the JSONL files currently in `~/.claude/projects/<encoded>/`
+    /// for this cwd. Used as a baseline so we can identify the new file the
+    /// freshly-launched `claude` will create.
+    private func currentClaudeJSONLs(for cwd: URL) -> Set<URL> {
+        let dir = claudeProjectsDirectory(for: cwd)
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil
+        ) else { return [] }
+        return Set(contents.filter { $0.pathExtension == "jsonl" })
+    }
+
+    private func captureClaudeSessionID(
+        for cwd: URL,
+        baseline: Set<URL>,
+        timeout: TimeInterval = 15
+    ) async -> String? {
+        let dir = claudeProjectsDirectory(for: cwd)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let contents = try? FileManager.default.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: nil
+            ) {
+                let jsonls = Set(contents.filter { $0.pathExtension == "jsonl" })
+                if let new = jsonls.subtracting(baseline).first {
+                    return new.deletingPathExtension().lastPathComponent
+                }
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        return nil
+    }
+
+    private func claudeProjectsDirectory(for cwd: URL) -> URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home
+            .appendingPathComponent(".claude/projects/\(cwd.claudeProjectsDirectoryName)")
+    }
+
     // MARK: - Permission + error UI
 
     private func showRelaunchRequiredAlert() {
@@ -167,5 +274,23 @@ final class SessionLauncherService: ObservableObject {
         alert.informativeText = error.localizedDescription
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+}
+
+private extension URL {
+    /// Filename Claude uses for this directory under `~/.claude/projects/`.
+    /// Per Claude's convention: every non-alphanumeric (ASCII) character is
+    /// replaced with `-`. So `/Users/me/Source/foo` becomes
+    /// `-Users-me-Source-foo`.
+    var claudeProjectsDirectoryName: String {
+        var result = ""
+        for char in standardizedFileURL.path {
+            if char.isASCII && (char.isLetter || char.isNumber) {
+                result.append(char)
+            } else {
+                result.append("-")
+            }
+        }
+        return result
     }
 }

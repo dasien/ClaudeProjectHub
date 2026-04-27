@@ -8,6 +8,7 @@ struct SessionsSidebar: View {
 
     @State private var newSessionPresented = false
     @State private var sessionToRename: Session?
+    @State private var sessionToResume: Session?
 
     var body: some View {
         List(selection: $store.selectedSessionID) {
@@ -43,6 +44,9 @@ struct SessionsSidebar: View {
         .sheet(item: $sessionToRename) { session in
             RenameSessionDialog(session: session)
         }
+        .sheet(item: $sessionToResume) { session in
+            ResumeSessionDialog(session: session)
+        }
     }
 
     private func startNewSession() {
@@ -63,10 +67,8 @@ struct SessionsSidebar: View {
                 lifecycle.close(session.id)
             }
         case .closed:
-            Button("Resume") {
-                Task { await launcher.resume(session) }
-            }
-            .disabled(session.claudeSessionId == nil)
+            Button("Resume…") { sessionToResume = session }
+                .disabled(session.claudeSessionId == nil)
             Button("Rename…") { sessionToRename = session }
             Divider()
             Button("Remove from List", role: .destructive) {

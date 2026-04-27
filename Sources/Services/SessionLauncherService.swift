@@ -90,7 +90,11 @@ final class SessionLauncherService: ObservableObject {
     /// window. The claudeSessionId is unchanged because `--resume` continues
     /// the same conversation.
     @discardableResult
-    func resume(_ session: Session) async -> Bool {
+    func resume(
+        _ session: Session,
+        windowMode: WindowMode = .newWindow,
+        targetSessionID: Session.ID? = nil
+    ) async -> Bool {
         guard session.status == .closed else { return false }
         guard let claudeSessionId = session.claudeSessionId else {
             presentError(LauncherError.missingClaudeSessionId)
@@ -101,13 +105,37 @@ final class SessionLauncherService: ObservableObject {
             return false
         }
 
+        // Claude assigns a sessionId at process startup but only writes the
+        // conversation JSONL once a message is exchanged. If the user opened
+        // a session and closed it without typing anything, `--resume` errors
+        // with "No conversation found". Catch that case here with a clearer
+        // message instead of dumping the error into a fresh Terminal window.
+        let jsonl = jsonlPath(for: session.cwd, sessionId: claudeSessionId)
+        if !FileManager.default.fileExists(atPath: jsonl.path) {
+            presentError(LauncherError.launchFailed(
+                "This session has no recorded conversation to resume. " +
+                "Claude only writes the transcript once the first message " +
+                "is exchanged, and this session was closed before that " +
+                "happened. Start a new session in this directory instead."
+            ))
+            return false
+        }
+
+        let targetWindowID: CGWindowID? = targetSessionID.flatMap {
+            windowManager.windowID(for: $0)
+        }
+        if windowMode == .newTab, targetSessionID != nil, targetWindowID == nil {
+            presentError(LauncherError.targetWindowMissing)
+            return false
+        }
+
         let baselinePIDs = await currentClaudePIDs()
 
         do {
             let result = try await launcher.launch(
                 in: session.cwd,
-                mode: .newWindow,
-                targetWindowID: nil,
+                mode: windowMode,
+                targetWindowID: targetWindowID,
                 claudeArgs: ["--resume", claudeSessionId]
             )
             // Reuse the existing Session record instead of adding a new one.
@@ -152,13 +180,6 @@ final class SessionLauncherService: ObservableObject {
 
         windowManager.bind(window, to: sessionID)
 
-        // Capture the new claude PID, then read its sessions metadata file
-        // to grab the Claude session UUID. The file at
-        // `~/.claude/sessions/<pid>.json` is the authoritative per-process
-        // record Claude maintains; it has sessionId, cwd, status, and a
-        // live updatedAt — much more reliable than diffing the JSONL
-        // directory and the canonical source for future external-session
-        // adoption and idle/working detection.
         if let claudePID = await waitForNewClaudePID(baseline: baselinePIDs) {
             store.update(id: sessionID) { $0.pid = claudePID }
             if let sessionFile = await readClaudeSessionFile(pid: claudePID) {
@@ -225,6 +246,13 @@ final class SessionLauncherService: ObservableObject {
         return nil
     }
 
+    // MARK: - JSONL transcript path
+
+    private func jsonlPath(for cwd: URL, sessionId: String) -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects/\(cwd.claudeProjectsDirectoryName)/\(sessionId).jsonl")
+    }
+
     // MARK: - Permission + error UI
 
     private func showRelaunchRequiredAlert() {
@@ -266,4 +294,22 @@ private struct ClaudeSessionFile: Decodable {
     let kind: String?
     let entrypoint: String?
     let version: String?
+}
+
+private extension URL {
+    /// Filename Claude uses for this directory under `~/.claude/projects/`.
+    /// Per Claude's convention: every non-alphanumeric (ASCII) character is
+    /// replaced with `-`. So `/Users/me/Source/foo` becomes
+    /// `-Users-me-Source-foo`.
+    var claudeProjectsDirectoryName: String {
+        var result = ""
+        for char in standardizedFileURL.path {
+            if char.isASCII && (char.isLetter || char.isNumber) {
+                result.append(char)
+            } else {
+                result.append("-")
+            }
+        }
+        return result
+    }
 }

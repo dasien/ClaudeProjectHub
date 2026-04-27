@@ -3,6 +3,10 @@ import Combine
 
 final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [Session] = []
+    /// Sidebar selection lives here (not in a SwiftUI @State) so that
+    /// non-UI callers — like SessionLauncherService after a successful
+    /// launch — can update which session is selected.
+    @Published var selectedSessionID: Session.ID?
 
     private let storeURL: URL
     private let persists: Bool
@@ -15,11 +19,15 @@ final class SessionStore: ObservableObject {
 
     func add(_ session: Session) {
         sessions.append(session)
+        selectedSessionID = session.id
         save()
     }
 
     func remove(id: Session.ID) {
         sessions.removeAll { $0.id == id }
+        if selectedSessionID == id {
+            selectedSessionID = nil
+        }
         save()
     }
 

@@ -5,12 +5,12 @@ struct SessionsSidebar: View {
     @EnvironmentObject private var launcher: SessionLauncherService
     @EnvironmentObject private var windowManager: WindowManager
     @EnvironmentObject private var lifecycle: SessionLifecycleMonitor
-    @Binding var selection: Session.ID?
 
     @State private var newSessionPresented = false
+    @State private var sessionToRename: Session?
 
     var body: some View {
-        List(selection: $selection) {
+        List(selection: $store.selectedSessionID) {
             Section("Sessions") {
                 ForEach(store.sortedForSidebar) { session in
                     SessionRow(session: session)
@@ -40,6 +40,9 @@ struct SessionsSidebar: View {
         .sheet(isPresented: $newSessionPresented) {
             NewSessionDialog()
         }
+        .sheet(item: $sessionToRename) { session in
+            RenameSessionDialog(session: session)
+        }
     }
 
     private func startNewSession() {
@@ -52,9 +55,10 @@ struct SessionsSidebar: View {
         switch session.status {
         case .running:
             Button("Show") {
-                selection = session.id
+                store.selectedSessionID = session.id
                 windowManager.focus(session.id)
             }
+            Button("Rename…") { sessionToRename = session }
             Button("Close") {
                 lifecycle.close(session.id)
             }
@@ -63,6 +67,7 @@ struct SessionsSidebar: View {
                 // Future: claude --resume <id> on hostKind in cwd
             }
             .disabled(true)
+            Button("Rename…") { sessionToRename = session }
             Divider()
             Button("Remove from List", role: .destructive) {
                 store.remove(id: session.id)

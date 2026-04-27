@@ -3,7 +3,6 @@ import SwiftUI
 struct TabbedHostArea: View {
     @EnvironmentObject private var store: SessionStore
     @EnvironmentObject private var windowManager: WindowManager
-    @Binding var selectedSessionID: Session.ID?
 
     private var runningSessions: [Session] {
         store.sessions.filter { $0.status == .running }
@@ -23,12 +22,12 @@ struct TabbedHostArea: View {
                 ForEach(runningSessions) { session in
                     TabChip(
                         title: session.displayTitle,
-                        isActive: session.id == selectedSessionID
+                        isActive: session.id == store.selectedSessionID
                     ) {
                         // Always focus, even if this tab is already selected:
                         // setting the binding to the same value wouldn't trigger
                         // an onChange-based focus path.
-                        selectedSessionID = session.id
+                        store.selectedSessionID = session.id
                         windowManager.focus(session.id)
                     }
                 }
@@ -42,7 +41,7 @@ struct TabbedHostArea: View {
         ZStack {
             Color(nsColor: .windowBackgroundColor)
             VStack(spacing: 8) {
-                if let id = selectedSessionID,
+                if let id = store.selectedSessionID,
                    let session = store.sessions.first(where: { $0.id == id }) {
                     Image(systemName: "macwindow.on.rectangle")
                         .font(.largeTitle)

@@ -21,9 +21,7 @@ struct TerminalAppLauncher: SessionLauncher {
         }
 
         let marker = "ClaudeProjectHub-\(UUID().uuidString)"
-        let cwdEscaped = shellQuote(cwd.path)
-        let claudeCommand = buildClaudeCommand(args: claudeArgs)
-        let runCommand = "cd \(cwdEscaped) && \(claudeCommand)"
+        let runCommand = ShellCommand.cdThenClaude(cwd: cwd, args: claudeArgs)
 
         let wasRunning = NSWorkspace.shared.runningApplications.contains {
             $0.bundleIdentifier == bundleIdentifier
@@ -171,18 +169,4 @@ struct TerminalAppLauncher: SessionLauncher {
         AXSupport.windows(of: pid).first { AXSupport.windowID(of: $0) == cgID }
     }
 
-    // MARK: - Shell command building
-
-    private func buildClaudeCommand(args: [String]) -> String {
-        guard !args.isEmpty else { return "claude" }
-        let escaped = args.map { shellQuote($0) }.joined(separator: " ")
-        return "claude \(escaped)"
-    }
-
-    /// Shell-quote a string so it survives intact through `do script` →
-    /// AppleScript string literal → bash. Wraps in single quotes and escapes
-    /// any literal single quotes within.
-    private func shellQuote(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
 }

@@ -23,7 +23,7 @@ extension HostConfig {
         switch strategy {
         case .builtin(let kind):
             switch kind {
-            case .terminalApp:
+            case .terminalApp, .iterm2:
                 return true
             }
         case .process:
@@ -48,7 +48,8 @@ enum HostStrategy: Codable, Hashable {
 
 enum BuiltinKind: String, Codable {
     case terminalApp = "terminal-app"
-    // Future: iterm2, vscode, rider
+    case iterm2
+    // Future: vscode, rider
 }
 
 // MARK: - Codable for the tagged HostStrategy enum

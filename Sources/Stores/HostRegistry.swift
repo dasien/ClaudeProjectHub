@@ -64,6 +64,13 @@ final class HostRegistry: ObservableObject {
             icon: "terminal.fill",
             bundleIdentifier: "com.apple.Terminal",
             strategy: .builtin(.terminalApp)
+        ),
+        HostConfig(
+            id: "iterm2",
+            displayName: "iTerm2",
+            icon: "terminal.fill",
+            bundleIdentifier: "com.googlecode.iterm2",
+            strategy: .builtin(.iterm2)
         )
     ]
 

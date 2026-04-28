@@ -134,6 +134,51 @@ enum AXSupport {
         }
         return nil
     }
+
+    /// Polls for a window of the given app PID whose CGWindowID isn't in the
+    /// supplied baseline. Useful for "find the new window after launching"
+    /// when the host doesn't expose a custom title we can match on.
+    static func waitForNewWindow(
+        in pid: pid_t,
+        excluding baseline: Set<CGWindowID>,
+        timeout: TimeInterval = 5.0,
+        pollInterval: TimeInterval = 0.15
+    ) async -> AXUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            for window in windows(of: pid) {
+                if let id = windowID(of: window), !baseline.contains(id) {
+                    return window
+                }
+            }
+            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+        }
+        return nil
+    }
+
+    /// Polls for a window of the given app PID whose CGWindowID matches the
+    /// supplied id. Used when the host has told us the id directly (e.g.
+    /// iTerm2's AppleScript returns `id of current window`, which IS the
+    /// CGWindowID). Short timeout because this just papers over the small
+    /// gap between the AppleScript returning and the window registering
+    /// with WindowServer.
+    static func waitForWindow(
+        matching cgID: CGWindowID,
+        in pid: pid_t,
+        timeout: TimeInterval = 3.0,
+        pollInterval: TimeInterval = 0.1
+    ) async -> AXUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            for window in windows(of: pid) {
+                if windowID(of: window) == cgID {
+                    return window
+                }
+            }
+            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+        }
+        return nil
+    }
 }
 
 extension CGRect {

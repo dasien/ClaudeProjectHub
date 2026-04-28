@@ -1,12 +1,26 @@
+import ApplicationServices
 import CoreGraphics
 import Foundation
 
-/// Returned from a launcher after spawning a session. The marker is the
-/// custom title we set on the host's tab so AX-based discovery can find
-/// the right window. Session record creation is the service's job — the
-/// launcher only knows about the host-specific spawning step.
+/// Returned from a launcher after spawning a session. The launcher passes
+/// back enough info for the service to find the new host window via AX.
+///
+/// Two discovery paths are supported:
+/// - `marker` only: service searches AX windows for one whose title contains
+///   the marker. Works when the host (e.g. Terminal) makes our custom title
+///   visible in its AX window title.
+/// - `preDiscoveredWindow` set: launcher already located the AX window
+///   itself (e.g. via pre/post window-set diff for iTerm2, where AX titles
+///   don't reflect our AppleScript-set session name). Service uses it
+///   directly and skips the marker search.
 struct LaunchResult {
     let marker: String
+    let preDiscoveredWindow: AXUIElement?
+
+    init(marker: String, preDiscoveredWindow: AXUIElement? = nil) {
+        self.marker = marker
+        self.preDiscoveredWindow = preDiscoveredWindow
+    }
 }
 
 protocol SessionLauncher {

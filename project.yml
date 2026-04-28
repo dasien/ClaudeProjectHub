@@ -39,6 +39,7 @@ targets:
         ENABLE_HARDENED_RUNTIME: true
         ENABLE_USER_SCRIPT_SANDBOXING: false
         GENERATE_INFOPLIST_FILE: false
+        CODE_SIGN_ENTITLEMENTS: Resources/ClaudeProjectHub.entitlements
 schemes:
   ClaudeProjectHub:
     build:

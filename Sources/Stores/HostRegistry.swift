@@ -74,7 +74,7 @@ final class HostRegistry: ObservableObject {
         )
     ]
 
-    private static var defaultURL: URL {
+    nonisolated private static var defaultURL: URL {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask

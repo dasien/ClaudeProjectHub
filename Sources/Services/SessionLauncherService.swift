@@ -81,6 +81,7 @@ final class SessionLauncherService: ObservableObject {
             Task { [weak self] in
                 await self?.discoverAndBind(
                     marker: result.marker,
+                    preDiscoveredWindow: result.preDiscoveredWindow,
                     sessionID: session.id,
                     bundleIdentifier: config.bundleIdentifier,
                     baselinePIDs: baselinePIDs
@@ -175,6 +176,7 @@ final class SessionLauncherService: ObservableObject {
             Task { [weak self] in
                 await self?.discoverAndBind(
                     marker: result.marker,
+                    preDiscoveredWindow: result.preDiscoveredWindow,
                     sessionID: session.id,
                     bundleIdentifier: config.bundleIdentifier,
                     baselinePIDs: baselinePIDs
@@ -210,6 +212,7 @@ final class SessionLauncherService: ObservableObject {
 
     private func discoverAndBind(
         marker: String,
+        preDiscoveredWindow: AXUIElement?,
         sessionID: Session.ID,
         bundleIdentifier: String?,
         baselinePIDs: Set<pid_t>
@@ -219,7 +222,16 @@ final class SessionLauncherService: ObservableObject {
                   $0.bundleIdentifier == bundleIdentifier
               })?.processIdentifier else { return }
 
-        guard let window = await AXSupport.findWindow(forMarker: marker, in: pid, timeout: 5) else {
+        // Prefer the launcher's pre-discovered window when it set one (e.g.
+        // iTerm2 uses a window-set diff to find the new window directly).
+        // Fall back to marker-based title search otherwise (used by Terminal,
+        // whose AX window title reflects our custom tab title).
+        let window: AXUIElement
+        if let pre = preDiscoveredWindow {
+            window = pre
+        } else if let found = await AXSupport.findWindow(forMarker: marker, in: pid, timeout: 5) {
+            window = found
+        } else {
             presentError(LauncherError.windowNotFound("timed out finding host window"))
             return
         }

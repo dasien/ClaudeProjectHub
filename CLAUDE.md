@@ -65,7 +65,7 @@ On hub launch, `SessionStore.load()` downgrades any persisted `idle`/`working` r
 
 ## Host registry
 
-Hosts are defined in `~/Library/Application Support/ClaudeProjectHub/hosts.json`. The hub writes a default file on first launch (containing `terminal-app` and `iterm2`) and **never overwrites the user's edits** afterwards. To add a new host without writing code, the user adds an entry.
+Hosts are defined in `~/Library/Application Support/ClaudeProjectHub/hosts.json`. The hub writes a default file on first launch (containing `terminal-app` and `iterm2`) and persists the user's edits back to the same file via the in-app Settings UI (Cmd+, → Hosts tab). The user can also edit the JSON directly — both paths read/write the same file.
 
 Schema (one example):
 
@@ -272,6 +272,7 @@ log stream --predicate 'process == "tccd" AND (eventMessage CONTAINS "ClaudeProj
 - Auto-select new session on launch
 - Rename action (right-click → Rename…)
 - Lifecycle monitor pauses when no sessions are running
+- Settings UI (Cmd+, or gear icon in toolbar): General tab (appearance) + Hosts tab (CRUD editor for the registry)
 
 ### Open
 

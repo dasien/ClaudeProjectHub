@@ -1,9 +1,11 @@
 import Foundation
 
 /// Loads the hub's known hosts from
-/// `~/Library/Application Support/ClaudeProjectHub/hosts.json`. Writes a
-/// default file (containing just `terminal-app`) on first launch; never
-/// overwrites the user's edits afterwards.
+/// `~/Library/Application Support/ClaudeProjectHub/hosts.json` and persists
+/// changes back to the same file. On first launch (file doesn't exist) the
+/// registry writes a default file containing the built-in hosts. After
+/// that, every add/update/remove writes the current state — so a future
+/// app launch reads back exactly what the user last saw.
 @MainActor
 final class HostRegistry: ObservableObject {
     @Published private(set) var hosts: [HostConfig] = []
@@ -15,41 +17,75 @@ final class HostRegistry: ObservableObject {
         load()
     }
 
+    // MARK: - Reads
+
     func host(forID id: String) -> HostConfig? {
         hosts.first { $0.id == id }
     }
 
-    /// The display name to show in UI when we have a hostID. Falls back to
-    /// the raw ID so a deleted/renamed host still shows something sensible.
     func displayName(forID id: String) -> String {
         host(forID: id)?.displayName ?? id
     }
 
-    /// The bundle identifier for a hostID, when known. Used by the launcher
-    /// service for process lookup and by the dialogs to check if the host
-    /// is currently running.
     func bundleIdentifier(forID id: String) -> String? {
         host(forID: id)?.bundleIdentifier
     }
 
+    // MARK: - Mutations
+
+    /// Adds a host or replaces an existing one with the same id. Persists
+    /// to disk.
+    func add(_ host: HostConfig) {
+        if let index = hosts.firstIndex(where: { $0.id == host.id }) {
+            hosts[index] = host
+        } else {
+            hosts.append(host)
+        }
+        save()
+    }
+
+    /// Updates an existing host (no-op if id isn't found). Persists to disk.
+    func update(_ host: HostConfig) {
+        guard let index = hosts.firstIndex(where: { $0.id == host.id }) else { return }
+        hosts[index] = host
+        save()
+    }
+
+    /// Removes the host with the given id. Persists to disk.
+    func remove(id: String) {
+        hosts.removeAll { $0.id == id }
+        save()
+    }
+
+    /// Whether `proposedID` is unused (or is the id of `excluding`, e.g.
+    /// when editing an existing host with its current id). Useful for the
+    /// editor to validate uniqueness.
+    func isIDAvailable(_ proposedID: String, excluding: String? = nil) -> Bool {
+        !hosts.contains { $0.id == proposedID && $0.id != excluding }
+    }
+
+    // MARK: - Persistence
+
     private func load() {
         if !FileManager.default.fileExists(atPath: url.path) {
-            writeDefaults()
+            hosts = HostRegistry.builtinDefaults
+            save()
+            return
         }
         if let data = try? Data(contentsOf: url),
            let decoded = try? JSONDecoder().decode([HostConfig].self, from: data) {
             hosts = decoded
         } else {
-            // Fallback if the user's file is corrupt — use defaults in
-            // memory but don't overwrite their file.
+            // File exists but corrupt — use defaults in memory but don't
+            // overwrite the user's file.
             hosts = HostRegistry.builtinDefaults
         }
     }
 
-    private func writeDefaults() {
+    private func save() {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(HostRegistry.builtinDefaults) else { return }
+        guard let data = try? encoder.encode(hosts) else { return }
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true

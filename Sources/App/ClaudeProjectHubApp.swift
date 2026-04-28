@@ -8,6 +8,8 @@ struct ClaudeProjectHubApp: App {
     @StateObject private var lifecycleMonitor: SessionLifecycleMonitor
     @StateObject private var launcherService: SessionLauncherService
 
+    @AppStorage("appearance") private var appearance: String = "system"
+
     init() {
         let store = SessionStore()
         let manager = WindowManager()
@@ -33,11 +35,26 @@ struct ClaudeProjectHubApp: App {
                 .environmentObject(lifecycleMonitor)
                 .environmentObject(launcherService)
                 .frame(minWidth: 900, minHeight: 600)
+                .preferredColorScheme(preferredColorScheme)
                 .onAppear {
                     lifecycleMonitor.start()
                 }
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
+
+        Settings {
+            SettingsView()
+                .environmentObject(hostRegistry)
+                .preferredColorScheme(preferredColorScheme)
+        }
+    }
+
+    private var preferredColorScheme: ColorScheme? {
+        switch appearance {
+        case "light": return .light
+        case "dark": return .dark
+        default: return nil // follow system
+        }
     }
 }

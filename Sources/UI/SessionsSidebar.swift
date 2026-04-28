@@ -5,6 +5,7 @@ struct SessionsSidebar: View {
     @EnvironmentObject private var launcher: SessionLauncherService
     @EnvironmentObject private var windowManager: WindowManager
     @EnvironmentObject private var lifecycle: SessionLifecycleMonitor
+    @Environment(\.openSettings) private var openSettings
 
     @State private var newSessionPresented = false
     @State private var sessionToRename: Session?
@@ -35,6 +36,13 @@ struct SessionsSidebar: View {
             ToolbarItem(placement: .primaryAction) {
                 Button(action: startNewSession) {
                     Label("New Session", systemImage: "plus")
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    openSettings()
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
                 }
             }
         }

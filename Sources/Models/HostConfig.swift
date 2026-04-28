@@ -5,15 +5,15 @@ import Foundation
 /// Loaded from `~/Library/Application Support/ClaudeProjectHub/hosts.json`.
 struct HostConfig: Codable, Identifiable, Hashable {
     /// Stable identifier — referenced by Session.hostID.
-    let id: String
-    let displayName: String
+    var id: String
+    var displayName: String
     /// SF Symbol name used for menu/list icons.
-    let icon: String
+    var icon: String
     /// Used to find the host's process via NSWorkspace and AX. Optional
     /// because some `process`-strategy hosts (e.g. ad-hoc CLI tools) may
     /// not correspond to a single app bundle.
-    let bundleIdentifier: String?
-    let strategy: HostStrategy
+    var bundleIdentifier: String?
+    var strategy: HostStrategy
 }
 
 extension HostConfig {
@@ -40,16 +40,38 @@ enum HostStrategy: Codable, Hashable {
     /// service's dispatcher.
     case builtin(BuiltinKind)
     /// Generic CLI-spawnable host. The executable is invoked with the given
-    /// arguments, with `{cwd}` substituted to the session's working
-    /// directory. Lets users add hosts via JSON without code changes.
-    /// (Implementation lands with M7 — Ghostty/Alacritty/WezTerm/kitty.)
+    /// arguments. ProcessLauncher substitutes `{cwd}`, `{claude}`, and
+    /// `{command}` tokens at launch time.
     case process(executable: String, arguments: [String])
 }
 
-enum BuiltinKind: String, Codable {
+enum BuiltinKind: String, Codable, Hashable, CaseIterable {
     case terminalApp = "terminal-app"
     case iterm2
-    // Future: vscode, rider
+    // Future: vscode, xcode, androidStudio
+}
+
+extension BuiltinKind {
+    /// Sensible default fields when the user picks this kind in the editor.
+    var suggestedDisplayName: String {
+        switch self {
+        case .terminalApp: return "Terminal"
+        case .iterm2: return "iTerm2"
+        }
+    }
+
+    var suggestedBundleIdentifier: String {
+        switch self {
+        case .terminalApp: return "com.apple.Terminal"
+        case .iterm2: return "com.googlecode.iterm2"
+        }
+    }
+
+    var suggestedIcon: String {
+        switch self {
+        case .terminalApp, .iterm2: return "terminal.fill"
+        }
+    }
 }
 
 // MARK: - Codable for the tagged HostStrategy enum

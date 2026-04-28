@@ -201,10 +201,7 @@ final class SessionLauncherService: ObservableObject {
                 return ITerm2Launcher()
             }
         case .process:
-            // Wired up alongside the first process-strategy host adapter.
-            throw LauncherError.unsupportedStrategy(
-                "process-strategy hosts (\"\(config.displayName)\") aren't launchable yet"
-            )
+            return ProcessLauncher(config: config)
         }
     }
 

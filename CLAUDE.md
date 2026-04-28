@@ -254,14 +254,7 @@ log stream --predicate 'process == "tccd" AND (eventMessage CONTAINS "ClaudeProj
 - **No emojis** in code or commit messages unless explicitly asked.
 - **Prefer cutting scope over expanding.** v1 has been deliberately trimmed multiple times. A working core beats an aspirational one.
 - **One concept per commit** with a clear message body explaining *why*. Look at `git log` for the established style.
-- **Co-author trailer on Claude-assisted commits**:
-
-  ```
-  Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-  ```
-
-  Adjust the model name to whatever you're actually using.
-
+- **No AI attribution in commit messages.** Don't add `Co-Authored-By: Claude …` trailers or any other AI attribution. Commit bodies should read like normal human-authored messages. (Older commits in this repo's history have attribution from before this convention was set; that's fine, just don't add new ones.)
 - **No CLAUDE.md edits without intent.** This file is ground truth for fresh sessions; keep it consistent with reality. Update it when you ship a milestone or learn a new gotcha.
 
 ---
@@ -284,9 +277,13 @@ log stream --predicate 'process == "tccd" AND (eventMessage CONTAINS "ClaudeProj
 
 #### M7 remainder
 
+The "big 3 IDEs" we want to support:
+
 - **VSCode**: `code <dir>` CLI + the Claude extension's "start session" command. Trigger mechanism is the open question (URL scheme, keyboard synthesis, or `code --command`). Investigation needed.
-- **Rider/JetBrains**: `rider <dir>` / `idea <dir>` + Claude plugin command. Same story — depends on what the plugin exposes.
-- **Process-strategy hosts** (Ghostty, Alacritty, WezTerm, kitty): the `process` strategy is declared but the executor isn't implemented. Once `ProcessLauncher` lands, every CLI-spawnable terminal becomes a JSON entry — no per-host Swift code.
+- **Xcode**: the odd one out — Xcode doesn't have an integrated terminal we can drive AppleScript into. Likely approach: open the project in Xcode AND spawn a separate Terminal/iTerm window with `claude` in the same dir, treating both as part of one logical "session." Needs design before implementation.
+- **Android Studio**: IntelliJ-based, similar to other JetBrains products. Has an integrated terminal pane and a plugin system. Claude Code's Studio support, when it exists, will likely look like its JetBrains plugin behavior.
+
+CLI-spawnable terminals (Ghostty, Alacritty, WezTerm, kitty, …) don't need new Swift code — `ProcessLauncher` (shipped 2026-04-28) handles them via `hosts.json` entries with `process` strategy.
 
 #### M8 — Sessions dashboard with cost estimates
 

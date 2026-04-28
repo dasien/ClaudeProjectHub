@@ -189,20 +189,15 @@ final class SessionLauncherService: ObservableObject {
         }
     }
 
-    // MARK: - Strategy dispatch
+    // MARK: - Launcher dispatch
 
+    /// Every host runs through the same launcher. The host's behavior
+    /// lives in its `.applescript` file on disk, not in code.
     private func makeLauncher(for config: HostConfig) throws -> SessionLauncher {
-        switch config.strategy {
-        case .builtin(let kind):
-            switch kind {
-            case .terminalApp:
-                return TerminalAppLauncher()
-            case .iterm2:
-                return ITerm2Launcher()
-            }
-        case .process:
-            return ProcessLauncher(config: config)
+        guard let scriptURL = hostRegistry.scriptURL(forID: config.id) else {
+            throw LauncherError.unknownHost(config.id)
         }
+        return ScriptedHostLauncher(config: config, scriptURL: scriptURL)
     }
 
     // MARK: - Post-launch discovery

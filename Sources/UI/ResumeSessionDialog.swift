@@ -16,10 +16,16 @@ struct ResumeSessionDialog: View {
         hostRegistry.host(forID: session.hostID)
     }
 
+    /// Only running sessions in the same host — a tab can't be created
+    /// in a window that belongs to a different app. Also excludes this
+    /// session itself in case it's somehow running.
     private var runningSessions: [Session] {
-        // Exclude this session itself in case it's somehow running.
         store.sessions
-            .filter { $0.status.isRunning && $0.id != session.id }
+            .filter {
+                $0.status.isRunning
+                && $0.id != session.id
+                && $0.hostID == session.hostID
+            }
             .sorted { $0.lastActivityAt > $1.lastActivityAt }
     }
 
@@ -65,6 +71,13 @@ struct ResumeSessionDialog: View {
                     }
                     .pickerStyle(.radioGroup)
                     .labelsHidden()
+                    .onChange(of: windowMode) { _, newMode in
+                        if newMode == .newTab,
+                           targetSessionID == nil,
+                           runningSessions.count == 1 {
+                            targetSessionID = runningSessions.first?.id
+                        }
+                    }
 
                     if windowMode == .newTab {
                         Picker("", selection: $targetSessionID) {

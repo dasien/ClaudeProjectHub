@@ -35,7 +35,6 @@ protocol SessionLauncher {
 
 enum LauncherError: Error, LocalizedError {
     case hostNotInstalled(String)
-    case unsupportedStrategy(String)
     case launchFailed(String)
     case windowNotFound(String)
     case targetWindowMissing
@@ -46,8 +45,6 @@ enum LauncherError: Error, LocalizedError {
         switch self {
         case .hostNotInstalled(let name):
             return "\(name) is not installed."
-        case .unsupportedStrategy(let detail):
-            return "This host's launch strategy isn't supported yet: \(detail)."
         case .launchFailed(let detail):
             return "Launch failed: \(detail)"
         case .windowNotFound(let detail):

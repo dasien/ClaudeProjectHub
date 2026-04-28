@@ -65,29 +65,43 @@ On hub launch, `SessionStore.load()` downgrades any persisted `idle`/`working` r
 
 ## Host registry
 
-Hosts are defined in `~/Library/Application Support/ClaudeProjectHub/hosts.json`. The hub writes a default file on first launch (containing `terminal-app` and `iterm2`) and persists the user's edits back to the same file via the in-app Settings UI (Cmd+, → Hosts tab). The user can also edit the JSON directly — both paths read/write the same file.
+Every host is driven by a single AppleScript file. There's no built-in vs process distinction in the code — `ScriptedHostLauncher` is the only launcher, and a host's launch behavior lives entirely in its `.applescript`.
 
-Schema (one example):
+Two locations:
+
+- **Bundled defaults** ship with the app at `Resources/Scripts/`: `terminal-app.applescript`, `iterm2.applescript`, and `_template.applescript` (a starter for user-added hosts). Copied into the user dir on first launch if not already present.
+- **User scripts** at `~/Library/Application Support/ClaudeProjectHub/scripts/`. User edits are never overwritten — once a script is in this dir it stays. (See "Smart bundled-script updates" in the Deferred section for the planned hash-sidecar fix.)
+
+Host metadata is in `~/Library/Application Support/ClaudeProjectHub/hosts.json`. Schema:
 
 ```json
 {
   "id": "iterm2",
   "displayName": "iTerm2",
-  "icon": "terminal.fill",
   "bundleIdentifier": "com.googlecode.iterm2",
-  "strategy": {
-    "type": "builtin",
-    "kind": "iterm2"
-  }
+  "launchScript": "iterm2.applescript"
 }
 ```
 
-Two strategy variants:
+Edits go through Settings (Cmd+, → Hosts tab) or directly to the JSON; both paths read/write the same file.
 
-- **`builtin`**: references one of our `BuiltinKind` cases (`terminalApp`, `iterm2`; future: `vscode`, `rider`). Each is wired to a concrete `SessionLauncher` in `SessionLauncherService.makeLauncher(for:)`.
-- **`process`**: declares an arbitrary CLI to spawn, with `executable` + `arguments` (`{cwd}` substitution will land with `ProcessLauncher`). Lets users add CLI-spawnable hosts (Ghostty, Alacritty, WezTerm, kitty…) via JSON without code changes. The actual executor isn't implemented yet — it's the next M7 unit.
+Placeholder substitution applied to the script before execution:
 
-`HostConfig.supportsNewTab` returns `true` for hosts that support adding a new tab to an existing window (Terminal, iTerm2). `process`-strategy hosts always create a new window per invocation.
+| Token | Value |
+|---|---|
+| `{cwd}` | absolute path of the working directory |
+| `{claude}` | shell command — `claude` or `claude --resume <id>` |
+| `{marker}` | unique tag (e.g. set as a tab title for AX matching) |
+| `{mode}` | `"newWindow"` or `"newTab"` |
+| `{targetWindowID}` | CGWindowID of the user-picked target window for newTab mode (`0` otherwise) |
+
+Substituted strings are AppleScript-escaped (`\\` and `\"`), so `"{cwd}"` is safe inside a string literal.
+
+Script return value: a positive integer is treated as the new window's CGWindowID — Swift binds the AX element directly via `AXSupport.waitForWindow(matching:in:)`. Returning `0` falls back to AX-diff discovery (snapshot of windows-before vs after). Use the direct path when the host's AppleScript dictionary exposes the window id; use the diff fallback for hosts driven by `do shell script` whose CLI doesn't return one.
+
+For newTab mode, Swift AX-raises the user's target window before running the script, so `tell current window` / System Events keystrokes inside the script land on the right window without each script reinventing that dance.
+
+`HostConfig.supportsNewTab` returns `true` for hosts whose default script handles newTab mode — currently a heuristic on `launchScript` filename (terminal-app, iterm2). Other hosts default to new-window-only.
 
 ---
 
@@ -179,12 +193,12 @@ Sources/
 ├── Models/
 │   ├── Session.swift                       persistent session record + Codable migration
 │   ├── SessionStatus.swift                 idle / working / closed + sortRank
-│   ├── HostConfig.swift                    HostConfig + HostStrategy + BuiltinKind
+│   ├── HostConfig.swift                    id / displayName / bundleIdentifier / launchScript
 │   ├── WindowMode.swift                    newWindow / newTab
 │   └── DockState.swift                     docked(tabIndex) / undocked (future)
 ├── Stores/
 │   ├── SessionStore.swift                  JSON persistence + selection state
-│   └── HostRegistry.swift                  hosts.json loader (writes defaults on first run)
+│   └── HostRegistry.swift                  hosts.json + bundled-script copy on first run
 ├── Services/
 │   ├── AccessibilityService.swift          AX trust check + prompt
 │   ├── AXSupport.swift                     AX helpers (windows, title, raise, close, CGWindowID)
@@ -195,9 +209,8 @@ Sources/
 │   └── WindowManager.swift                 AX bindings per session; focus, close
 ├── Launchers/
 │   ├── SessionLauncher.swift               protocol + LaunchResult + LauncherError
-│   ├── ShellCommand.swift                  shell-quoting + `cd <cwd> && claude` builders
-│   ├── TerminalAppLauncher.swift           Terminal.app — AppleScript + SE keystroke + tab-count diff
-│   └── ITerm2Launcher.swift                iTerm2 — AppleScript-only, direct CGWindowID lookup
+│   ├── ShellCommand.swift                  shell-quoting + `claude` invocation builder
+│   └── ScriptedHostLauncher.swift          the only launcher: substitutes + runs the host's script
 └── UI/
     ├── MainView.swift                      NavigationSplitView wrapper
     ├── SessionsSidebar.swift               List with right-click menus + sheets
@@ -205,10 +218,20 @@ Sources/
     ├── TabbedHostArea.swift                tab bar + detail card
     ├── NewSessionDialog.swift              + button → this sheet
     ├── ResumeSessionDialog.swift           Resume… right-click → this sheet
-    └── RenameSessionDialog.swift           Rename… right-click → this sheet
+    ├── RenameSessionDialog.swift           Rename… right-click → this sheet
+    ├── SettingsView.swift                  General + Hosts tabs (Cmd+,)
+    ├── GeneralSettingsView.swift           appearance preferences
+    ├── HostsSettingsView.swift             host list with native selection + double-click edit
+    ├── HostEditorView.swift                add/edit a host (Display Name → Choose App → auto slug)
+    ├── HostIconView.swift                  bundle-id-keyed icon resolution
+    └── HelpPopover.swift                   (i) info-circle popover next to confusing labels
 Resources/
 ├── Info.plist                              generated by xcodegen
-└── ClaudeProjectHub.entitlements           apple-events entitlement
+├── ClaudeProjectHub.entitlements           apple-events entitlement
+└── Scripts/                                bundled default scripts copied to user dir on first run
+    ├── terminal-app.applescript
+    ├── iterm2.applescript
+    └── _template.applescript               starter for user-added hosts
 project.yml                                  xcodegen config (commit; .xcodeproj is gitignored)
 ```
 
@@ -266,7 +289,8 @@ log stream --predicate 'process == "tccd" AND (eventMessage CONTAINS "ClaudeProj
 - **M1–M4**: skeleton, launch, focus, lifecycle (auto-close on PID exit + manual Close)
 - **M5**: Terminal warm-start AX raise + Cmd-T/N keystroke + tab-count-diff polling
 - **M6**: JSON host registry — `HostConfig` + `HostRegistry` + strategy-based dispatch
-- **M7 (in progress)**: iTerm2 shipped as first non-Terminal host (direct CGWindowID lookup)
+- **M7 (partial)**: iTerm2 shipped as first non-Terminal host (direct CGWindowID lookup)
+- **M7 — script-driven hosts** (2026-04-28): collapsed `TerminalAppLauncher` / `ITerm2Launcher` / `ProcessLauncher` into a single `ScriptedHostLauncher`. Every host is now one `.applescript` file in `~/Library/Application Support/ClaudeProjectHub/scripts/`; defaults ship in the bundle. New hosts are added through Settings → Hosts (Display Name + Choose Application + auto-slug), and the user can drop in any host with a script — no Swift code change needed. Dropped `HostStrategy` / `BuiltinKind` from the model.
 - Resume from closed sessions (with stale-`claudeSessionId` recovery + empty-conversation guard)
 - Idle/working status detection from `~/.claude/sessions/<pid>.json`
 - Auto-select new session on launch
@@ -284,7 +308,7 @@ The "big 3 IDEs" we want to support:
 - **Xcode**: the odd one out — Xcode doesn't have an integrated terminal we can drive AppleScript into. Likely approach: open the project in Xcode AND spawn a separate Terminal/iTerm window with `claude` in the same dir, treating both as part of one logical "session." Needs design before implementation.
 - **Android Studio**: IntelliJ-based, similar to other JetBrains products. Has an integrated terminal pane and a plugin system. Claude Code's Studio support, when it exists, will likely look like its JetBrains plugin behavior.
 
-CLI-spawnable terminals (Ghostty, Alacritty, WezTerm, kitty, …) don't need new Swift code — `ProcessLauncher` (shipped 2026-04-28) handles them via `hosts.json` entries with `process` strategy.
+CLI-spawnable terminals (Ghostty, Alacritty, WezTerm, kitty, …) don't need new Swift code — add a host through Settings → Hosts and edit the generated `.applescript` (starts from `_template.applescript`) to `do shell script` the terminal's CLI with `{cwd}` and `{claude}` substituted in.
 
 #### M8 — Sessions dashboard with cost estimates
 
@@ -296,11 +320,12 @@ When starting M8, look at `~/ClaudeMultiAgentTemplate` (bgentry's other project)
 
 This file (CLAUDE.md) and README.md are part of M9. Still open:
 
-- **INTEGRATIONS_GUIDE.md** — how to add a new host adapter, both `builtin:*` (write a Swift `SessionLauncher`) and `process` (edit `hosts.json`) paths. Document the AX discovery model, marker conventions, and the lessons in this file.
-- **USER_GUIDE.md** — end-user flows: new session, resume, rename, host configuration via `hosts.json`.
+- **INTEGRATIONS_GUIDE.md** — how to add a new host: pick an app, edit its `.applescript` from `_template.applescript`, document the placeholder contract and the AX-diff fallback. Cross-reference the lessons in this file.
+- **USER_GUIDE.md** — end-user flows: new session, resume, rename, adding a host through Settings or by editing `hosts.json` + a script directly.
 
 ### Deferred (no milestone, available anytime)
 
+- **Smart bundled-script updates** — `HostRegistry.copyBundledScriptsIfMissing` only copies a bundled `.applescript` when the user's copy doesn't exist. So when we ship a fix to a default script (e.g. iterm2.applescript), existing installs keep their old copy and the user has to `rm` it manually to pick up the change. Fix: ship a hash sidecar (`.shipped.json` in the scripts dir) recording the SHA of each script as last shipped. On launch, hash the user's file — if it still matches the recorded SHA, they haven't edited it, so safely overwrite with the new bundle and update the sidecar. If it differs, leave alone. Distinguishes "user edited" from "we re-shipped" without timestamps.
 - **Tab-area docking** — snap host windows into the hub's right pane via AX positioning. Originally v1's centerpiece, deferred 2026-04-26 due to coord/timing fragility before the rest of v1 worked. The AX discovery infrastructure is in place (per-session window bindings, marker-titled tabs); reviving docking means rebuilding the `WindowManager.updateTabFrame` + `TabFrameReader` path with what we've learned.
 - **Undocking** — depends on docking shipping first.
 - **External session adoption** — enumerate `~/.claude/sessions/*.json` to find every running claude on the machine, including ones the hub didn't launch. `ClaudeSessionFile` is the foundation. Filter `kind == "interactive" && entrypoint == "cli"` to avoid sub-process / plugin sessions.
@@ -325,6 +350,6 @@ If you're a Claude session opening this repo for the first time:
 1. Read this file completely.
 2. Run `git log --oneline -20` to see recent work.
 3. Run `ls Sources/Services/ Sources/Launchers/ Sources/Models/` to ground yourself in the structure.
-4. The most opinionated files (where conventions matter most) are `SessionLauncherService.swift`, `ITerm2Launcher.swift`, and `TerminalAppLauncher.swift`. Read at least one launcher end-to-end to understand the lifecycle: `launch → AppleScript → discover-and-bind → AX window → SessionStore`.
+4. The most opinionated files (where conventions matter most) are `SessionLauncherService.swift`, `ScriptedHostLauncher.swift`, and the bundled `Resources/Scripts/*.applescript`. Read the launcher end-to-end and pair it with `iterm2.applescript` to understand the lifecycle: `launch → substitute → AppleScript → return CGWindowID or fall back to AX diff → bind → SessionStore`.
 5. Before suggesting design changes, search this file for relevant "Lessons learned" entries — most non-obvious choices are documented there.
 6. When you ship something, update the "Milestones" section here. Don't let the file go stale.

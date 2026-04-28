@@ -2,13 +2,16 @@ import SwiftUI
 
 struct HostsSettingsView: View {
     @EnvironmentObject private var hostRegistry: HostRegistry
+
+    @State private var selectedHostID: HostConfig.ID?
     @State private var hostToEdit: HostConfig?
     @State private var presentingNew = false
     @State private var hostToConfirmDelete: HostConfig?
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
+            // Header
+            HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Hosts")
                         .font(.headline)
@@ -17,22 +20,19 @@ struct HostsSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button {
-                    presentingNew = true
-                } label: {
-                    Label("Add Host", systemImage: "plus")
-                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
 
             Divider()
 
-            List {
+            // List
+            List(selection: $selectedHostID) {
                 ForEach(hostRegistry.hosts) { host in
                     HostRow(host: host)
+                        .tag(host.id)
                         .contentShape(Rectangle())
-                        .onTapGesture {
+                        .onTapGesture(count: 2) {
                             hostToEdit = host
                         }
                         .contextMenu {
@@ -45,6 +45,37 @@ struct HostsSettingsView: View {
                 }
             }
             .listStyle(.inset(alternatesRowBackgrounds: true))
+
+            Divider()
+
+            // Bottom action bar — System Settings-style + / − pair
+            HStack(spacing: 4) {
+                Button {
+                    presentingNew = true
+                } label: {
+                    Image(systemName: "plus")
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.borderless)
+                .help("Add a host")
+
+                Button {
+                    if let id = selectedHostID,
+                       let host = hostRegistry.hosts.first(where: { $0.id == id }) {
+                        hostToConfirmDelete = host
+                    }
+                } label: {
+                    Image(systemName: "minus")
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.borderless)
+                .disabled(selectedHostID == nil)
+                .help("Delete selected host")
+
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
         }
         .sheet(isPresented: $presentingNew) {
             HostEditorView(editingHost: nil)
@@ -63,6 +94,9 @@ struct HostsSettingsView: View {
             Button("Delete", role: .destructive) {
                 if let host = hostToConfirmDelete {
                     hostRegistry.remove(id: host.id)
+                    if selectedHostID == host.id {
+                        selectedHostID = nil
+                    }
                 }
                 hostToConfirmDelete = nil
             }
@@ -77,9 +111,7 @@ private struct HostRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: host.icon)
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
+            HostIconView(host: host, size: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(host.displayName)
                     .font(.body)

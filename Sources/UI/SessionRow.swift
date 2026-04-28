@@ -11,7 +11,10 @@ struct SessionRow: View {
                 Text(session.displayTitle)
                     .font(.headline)
                     .lineLimit(1)
-                HStack(spacing: 6) {
+                HStack(spacing: 4) {
+                    if let host = hostRegistry.host(forID: session.hostID) {
+                        HostIconView(host: host, size: 12)
+                    }
                     Text(hostRegistry.displayName(forID: session.hostID))
                     Text("·")
                     timeText

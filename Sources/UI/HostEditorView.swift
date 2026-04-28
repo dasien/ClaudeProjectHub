@@ -35,7 +35,6 @@ struct HostEditorView: View {
         guard !id.trimmingCharacters(in: .whitespaces).isEmpty,
               !displayName.trimmingCharacters(in: .whitespaces).isEmpty,
               !icon.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
-        // Don't let user create a host whose id collides with another host's id.
         if !hostRegistry.isIDAvailable(id, excluding: editingHost?.id) { return false }
         if strategyType == .process && executable.trimmingCharacters(in: .whitespaces).isEmpty {
             return false
@@ -45,14 +44,24 @@ struct HostEditorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(isEditing ? "Edit Host" : "New Host")
-                .font(.headline)
+            HStack(spacing: 12) {
+                EditorIconPreview(
+                    bundleIdentifier: bundleIdentifier,
+                    executable: executable,
+                    sfSymbolFallback: icon,
+                    size: 32
+                )
+                Text(isEditing ? "Edit Host" : "New Host")
+                    .font(.headline)
+            }
 
-            field(label: "ID") {
+            field(
+                label: "Identifier",
+                helpText: "A unique key sessions store to remember which host they were launched in. Once a host is created, this can't change without orphaning existing sessions."
+            ) {
                 TextField("e.g. ghostty", text: $id)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(isEditing) // changing id post-creation breaks Session.hostID references
-                    .help(isEditing ? "Existing sessions reference this id; not editable." : "")
+                    .disabled(isEditing)
             }
 
             field(label: "Display Name") {
@@ -60,22 +69,22 @@ struct HostEditorView: View {
                     .textFieldStyle(.roundedBorder)
             }
 
-            field(label: "Icon (SF Symbol)") {
-                HStack {
-                    TextField("e.g. terminal.fill", text: $icon)
-                        .textFieldStyle(.roundedBorder)
-                    Image(systemName: icon)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 20)
-                }
-            }
-
-            field(label: "Bundle Identifier") {
-                TextField("e.g. com.mitchellh.ghostty (recommended)", text: $bundleIdentifier)
+            field(
+                label: "Bundle Identifier",
+                helpText: "The macOS bundle ID of the host app (find via the .app's Info.plist, or just install the app and the hub will show its actual icon when this is set). Used to locate the running process and its icon. Optional but recommended — without it, the hub can't bind to the host's window via Accessibility."
+            ) {
+                TextField("e.g. com.mitchellh.ghostty", text: $bundleIdentifier)
                     .textFieldStyle(.roundedBorder)
             }
 
-            field(label: "Strategy") {
+            field(
+                label: "Strategy",
+                helpText: """
+                Built-in: handled by Swift code in the hub. Currently Terminal.app and iTerm2 — these have specific quirks (AppleScript dictionaries, AX patterns) that need per-host code.
+
+                Process: a CLI command the hub runs with token substitution. Use this for any terminal that takes a command-line invocation — Ghostty, Alacritty, WezTerm, kitty, etc. No Swift code needed; just configure the executable and arguments.
+                """
+            ) {
                 Picker("", selection: $strategyType) {
                     ForEach(StrategyType.allCases, id: \.self) { type in
                         Text(type.displayName).tag(type)
@@ -110,7 +119,18 @@ struct HostEditorView: View {
                     }
                 }
 
-                field(label: "Arguments") {
+                field(
+                    label: "Arguments",
+                    helpText: """
+                    Passed to the executable verbatim. Available substitution tokens:
+
+                    {cwd} — absolute path of the session's working directory
+                    {claude} — `claude` (or `claude --resume <id>` on resume)
+                    {command} — full shell line: `cd '<cwd>' && {claude}`
+
+                    Most CLI terminals accept `--working-directory` and `-e`, so a typical entry looks like: ["--working-directory={cwd}", "-e", "{claude}"]
+                    """
+                ) {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(arguments.indices, id: \.self) { index in
                             HStack {
@@ -122,6 +142,7 @@ struct HostEditorView: View {
                                     Image(systemName: "minus.circle")
                                 }
                                 .buttonStyle(.borderless)
+                                .help("Remove argument")
                             }
                         }
                         Button {
@@ -130,10 +151,20 @@ struct HostEditorView: View {
                             Label("Add Argument", systemImage: "plus")
                         }
                         .buttonStyle(.borderless)
-                        Text("Tokens: {cwd}, {claude}, {command}")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
+                }
+            }
+
+            field(
+                label: "Fallback Icon (SF Symbol)",
+                helpText: "Used only if the hub can't resolve the host app's actual icon (i.e. no Bundle Identifier set, or the app isn't installed). Otherwise the live icon shown above is what the user sees."
+            ) {
+                HStack {
+                    TextField("e.g. terminal.fill", text: $icon)
+                        .textFieldStyle(.roundedBorder)
+                    Image(systemName: icon)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20)
                 }
             }
 
@@ -148,14 +179,25 @@ struct HostEditorView: View {
             .padding(.top, 4)
         }
         .padding(20)
-        .frame(width: 540)
+        .frame(width: 560)
         .onAppear { loadFromEditing() }
     }
 
     @ViewBuilder
-    private func field<Content: View>(label: String, @ViewBuilder content: () -> Content) -> some View {
+    private func field<Content: View>(
+        label: String,
+        helpText: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.subheadline).foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Text(label)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                if let helpText {
+                    HelpPopover(text: helpText)
+                }
+            }
             content()
         }
     }
@@ -220,16 +262,37 @@ struct HostEditorView: View {
         dismiss()
     }
 
+    /// Opens the standard NSOpenPanel and lets the user pick either:
+    ///   - an .app bundle → we extract its executable + bundleIdentifier
+    ///     from Info.plist, fill them in, and the icon preview updates
+    ///     automatically via NSWorkspace.icon(forFile:)
+    ///   - a plain executable → we use its path verbatim
+    ///
+    /// `treatsFilePackagesAsDirectories = false` is what makes .app bundles
+    /// selectable as files instead of opening into them like directories.
     private func browseExecutable() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        // .app bundles are technically directories; let the user navigate
-        // into them to pick the actual executable inside Contents/MacOS.
-        panel.treatsFilePackagesAsDirectories = true
-        panel.title = "Select host executable"
-        if panel.runModal() == .OK, let url = panel.url {
+        panel.treatsFilePackagesAsDirectories = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.title = "Select host application or executable"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        if url.pathExtension == "app", let bundle = Bundle(url: url) {
+            if let exeURL = bundle.executableURL {
+                executable = exeURL.path
+            } else {
+                executable = url.path
+            }
+            // Always overwrite bundleIdentifier when selecting an .app —
+            // that's the most reliable source. The user can clear/edit
+            // afterwards if they have reason to.
+            if let bundleID = bundle.bundleIdentifier {
+                bundleIdentifier = bundleID
+            }
+        } else {
             executable = url.path
         }
     }

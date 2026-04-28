@@ -10,7 +10,6 @@ struct HostsSettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Hosts")
@@ -26,29 +25,31 @@ struct HostsSettingsView: View {
 
             Divider()
 
-            // List
+            // Apple's canonical pattern for single-click select + double-click
+            // edit + right-click menu on macOS Lists. The contextMenu modifier's
+            // primaryAction fires on double-click and on Return.
             List(selection: $selectedHostID) {
                 ForEach(hostRegistry.hosts) { host in
-                    HostRow(host: host)
-                        .tag(host.id)
-                        .contentShape(Rectangle())
-                        .onTapGesture(count: 2) {
-                            hostToEdit = host
-                        }
-                        .contextMenu {
-                            Button("Edit…") { hostToEdit = host }
-                            Divider()
-                            Button("Delete…", role: .destructive) {
-                                hostToConfirmDelete = host
-                            }
-                        }
+                    HostRow(host: host).tag(host.id)
                 }
             }
             .listStyle(.inset(alternatesRowBackgrounds: true))
+            .contextMenu(forSelectionType: HostConfig.ID.self) { ids in
+                if let host = host(for: ids) {
+                    Button("Edit…") { hostToEdit = host }
+                    Divider()
+                    Button("Delete…", role: .destructive) {
+                        hostToConfirmDelete = host
+                    }
+                }
+            } primaryAction: { ids in
+                if let host = host(for: ids) {
+                    hostToEdit = host
+                }
+            }
 
             Divider()
 
-            // Bottom action bar — System Settings-style + / − pair
             HStack(spacing: 4) {
                 Button {
                     presentingNew = true
@@ -101,8 +102,16 @@ struct HostsSettingsView: View {
                 hostToConfirmDelete = nil
             }
         } message: {
-            Text("Existing sessions launched on this host won't be affected, but you won't be able to launch new sessions on it until you re-add it.")
+            Text("Existing sessions launched on this host won't be affected, but you won't be able to launch new sessions on it until you re-add it. The launch script file on disk is left in place.")
         }
+    }
+
+    /// The contextMenu callbacks receive a Set of selected ids. Single-
+    /// selection lists usually have one entry, but right-clicking an
+    /// unselected row passes that row's id without changing `selectedHostID`.
+    private func host(for ids: Set<HostConfig.ID>) -> HostConfig? {
+        guard let id = ids.first else { return nil }
+        return hostRegistry.hosts.first { $0.id == id }
     }
 }
 
@@ -115,7 +124,7 @@ private struct HostRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(host.displayName)
                     .font(.body)
-                Text(strategyDescription)
+                Text(host.launchScript)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -128,14 +137,5 @@ private struct HostRow: View {
                 .monospaced()
         }
         .padding(.vertical, 4)
-    }
-
-    private var strategyDescription: String {
-        switch host.strategy {
-        case .builtin(let kind):
-            return "Built-in · \(kind.rawValue)"
-        case .process(let executable, _):
-            return "Process · \(executable)"
-        }
     }
 }

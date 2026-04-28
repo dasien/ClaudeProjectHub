@@ -1,0 +1,40 @@
+-- Template launch script. Edit to fit how your host accepts a command.
+--
+-- Hub provides these substitutions before running:
+--   {cwd}            absolute path of the working directory
+--   {claude}         shell command: `claude` or `claude --resume <id>`
+--   {marker}         unique tag for AX-based discovery (e.g. set as a tab
+--                    title where the host supports it)
+--   {mode}           "newWindow" or "newTab"
+--   {targetWindowID} CGWindowID of the user-picked target window for newTab
+--                    mode (0 otherwise). The hub has already AX-raised this
+--                    window in Swift before this script runs, so System
+--                    Events keystrokes from this script land on it.
+--
+-- Returns: integer CGWindowID of the new tab/window for AX binding, or 0
+-- to let the hub fall back to AX diff (snapshot windows-before vs after).
+--
+-- ─── Example: a CLI-spawnable terminal (Ghostty / Alacritty / WezTerm) ───
+--
+--   set theCwd to "{cwd}"
+--   set theClaude to "{claude}"
+--   do shell script "/Applications/SomeTerminal.app/Contents/MacOS/someterminal --working-directory=" & quoted form of theCwd & " -e " & quoted form of theClaude & " &"
+--   return 0  -- let hub do AX diff
+--
+-- ─── Example: an IDE driven via keyboard shortcut (VSCode pattern) ───
+--
+--   set theCwd to "{cwd}"
+--   do shell script "code " & quoted form of theCwd
+--   delay 1.0
+--   tell application "System Events"
+--       tell process "Code"
+--           set frontmost to true
+--           keystroke "p" using {command down, shift down}
+--           delay 0.2
+--           keystroke "Claude: Start Session"
+--           keystroke return
+--       end tell
+--   end tell
+--   return 0
+
+error "No launch logic configured. Edit this script to implement the host's launch flow."

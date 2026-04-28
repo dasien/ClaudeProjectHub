@@ -19,9 +19,12 @@ struct NewSessionDialog: View {
         hostRegistry.host(forID: hostID)
     }
 
+    /// Only sessions running in the currently-selected host. A new tab can
+    /// only nest in a window that belongs to the same app — picking a
+    /// Terminal target while launching iTerm2 wouldn't work.
     private var runningSessions: [Session] {
         store.sessions
-            .filter { $0.status.isRunning }
+            .filter { $0.status.isRunning && $0.hostID == hostID }
             .sorted { $0.lastActivityAt > $1.lastActivityAt }
     }
 
@@ -71,6 +74,24 @@ struct NewSessionDialog: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
+                .onChange(of: hostID) { _, _ in
+                    // Sessions that don't belong to the new host should
+                    // disappear from the dropdown — clear any selection
+                    // that's now invalid, and fall back to .newWindow if
+                    // the new host can't use tabs at all.
+                    if let target = targetSessionID,
+                       !runningSessions.contains(where: { $0.id == target }) {
+                        targetSessionID = nil
+                    }
+                    if windowMode == .newTab, !canUseNewTab {
+                        windowMode = .newWindow
+                    }
+                    if windowMode == .newTab,
+                       targetSessionID == nil,
+                       runningSessions.count == 1 {
+                        targetSessionID = runningSessions.first?.id
+                    }
+                }
             }
 
             field(label: "Open in") {
@@ -83,6 +104,13 @@ struct NewSessionDialog: View {
                     }
                     .pickerStyle(.radioGroup)
                     .labelsHidden()
+                    .onChange(of: windowMode) { _, newMode in
+                        if newMode == .newTab,
+                           targetSessionID == nil,
+                           runningSessions.count == 1 {
+                            targetSessionID = runningSessions.first?.id
+                        }
+                    }
 
                     if windowMode == .newTab {
                         Picker("", selection: $targetSessionID) {

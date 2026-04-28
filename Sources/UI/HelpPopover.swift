@@ -22,6 +22,10 @@ struct HelpPopover: View {
                 .font(.callout)
                 .padding(12)
                 .frame(maxWidth: 320, alignment: .leading)
+                // Without fixedSize, multi-line popover content gets
+                // clipped to a single line because the popover infers
+                // a too-small intrinsic height.
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

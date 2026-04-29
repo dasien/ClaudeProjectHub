@@ -8,12 +8,19 @@ final class SessionLauncherService: ObservableObject {
     private let store: SessionStore
     private let windowManager: WindowManager
     private let hostRegistry: HostRegistry
+    private let dockController: DockController
     private var hasRequestedAccessibility = false
 
-    init(store: SessionStore, windowManager: WindowManager, hostRegistry: HostRegistry) {
+    init(
+        store: SessionStore,
+        windowManager: WindowManager,
+        hostRegistry: HostRegistry,
+        dockController: DockController
+    ) {
         self.store = store
         self.windowManager = windowManager
         self.hostRegistry = hostRegistry
+        self.dockController = dockController
     }
 
     /// Checks Accessibility access and either returns true (proceed) or
@@ -189,6 +196,80 @@ final class SessionLauncherService: ObservableObject {
         }
     }
 
+    /// Adopts an external claude session — one running on the
+    /// machine that the hub didn't launch. Resolves the host window
+    /// via `HostWindowResolver` (parent-walk first, falling back to
+    /// controlling-tty AppleScript for iTerm2/Terminal), creates a
+    /// Session record, binds, and docks.
+    @discardableResult
+    func adopt(_ external: ExternalSession) async -> Bool {
+        // Re-resolve at adopt time: the scanner's match may be stale
+        // (windows opened/closed since the last poll) and resolution
+        // is cheap enough.
+        guard let match = HostWindowResolver.resolve(
+            claudePID: external.pid,
+            registry: hostRegistry
+        ) else {
+            presentError(LauncherError.launchFailed(
+                "Couldn't find which host app this session is running in. " +
+                "If you're using a host that isn't in the hub's Settings → " +
+                "Hosts list, add it there first. Otherwise the host's process " +
+                "tree may not be walkable — try focusing the right window " +
+                "and adopting again."
+            ))
+            return false
+        }
+
+        // Prefer the CGWindowID from the tty-based lookup when we
+        // have it — that's an exact-window match. Fall back to the
+        // host's focused window when we only know the host's PID
+        // (parent-walk path).
+        let window: AXUIElement
+        if let cgID = match.cgWindowID,
+           let exact = await AXSupport.waitForWindow(matching: cgID, in: match.hostAppPID) {
+            window = exact
+        } else if let fallback = focusedWindow(of: match.hostAppPID)
+                ?? AXSupport.windows(of: match.hostAppPID).first {
+            window = fallback
+        } else {
+            presentError(LauncherError.windowNotFound(
+                "No accessible window found for the host app. Make sure " +
+                "Accessibility access is granted."
+            ))
+            return false
+        }
+
+        let session = Session(
+            name: external.cwd.lastPathComponent,
+            cwd: external.cwd,
+            hostID: match.hostID,
+            status: .idle
+        )
+        store.add(session)
+        store.update(id: session.id) {
+            $0.claudeSessionId = external.claudeSessionId
+            $0.pid = external.pid
+        }
+        windowManager.bind(window, to: session.id)
+        dockController.dock(window: window, sessionID: session.id)
+        store.selectedSessionID = session.id
+        return true
+    }
+
+    /// Returns the AX-focused window of the given app, or nil if AX
+    /// can't read it.
+    private func focusedWindow(of pid: pid_t) -> AXUIElement? {
+        let app = AXUIElementCreateApplication(pid)
+        var value: AnyObject?
+        let err = AXUIElementCopyAttributeValue(
+            app,
+            kAXFocusedWindowAttribute as CFString,
+            &value
+        )
+        guard err == .success, let element = value else { return nil }
+        return (element as! AXUIElement)
+    }
+
     // MARK: - Launcher dispatch
 
     /// Every host runs through the same launcher. The host's behavior
@@ -229,6 +310,9 @@ final class SessionLauncherService: ObservableObject {
         }
 
         windowManager.bind(window, to: sessionID)
+        // Auto-dock newly-launched sessions. The DockController writes
+        // the AX frame into the hub's dock rectangle and pins it there.
+        dockController.dock(window: window, sessionID: sessionID)
 
         if let claudePID = await waitForNewClaudePID(baseline: baselinePIDs) {
             store.update(id: sessionID) { $0.pid = claudePID }

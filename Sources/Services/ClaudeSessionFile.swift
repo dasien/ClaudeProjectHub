@@ -44,4 +44,28 @@ extension ClaudeSessionFile {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/sessions/\(pid).json")
     }
+
+    /// Returns the directory containing all per-pid session files.
+    static var sessionsDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/sessions", isDirectory: true)
+    }
+
+    /// Enumerates every per-pid session JSON in the sessions
+    /// directory and decodes each. Stale files (orphaned after a
+    /// crash) may be present; callers should filter by pid liveness.
+    static func enumerateAll() -> [ClaudeSessionFile] {
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: sessionsDirectory,
+            includingPropertiesForKeys: nil
+        ) else { return [] }
+        return contents.compactMap { url in
+            guard url.pathExtension == "json",
+                  let data = try? Data(contentsOf: url),
+                  let file = try? JSONDecoder().decode(ClaudeSessionFile.self, from: data) else {
+                return nil
+            }
+            return file
+        }
+    }
 }

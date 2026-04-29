@@ -34,6 +34,19 @@ final class DockController: ObservableObject {
     /// AX writes — a hub drag changes only origin (60Hz), so writing
     /// size every frame is pure waste.
     private var lastWrittenFrames: [Session.ID: CGRect] = [:]
+    /// The foreign window's frame at the moment we docked it, in
+    /// CG/AX coordinates. Restored on explicit undock (right-click,
+    /// programmatic) so the released window goes back to a sensible
+    /// place rather than staying stuck at the dock rect.
+    private var preDockFrames: [Session.ID: CGRect] = [:]
+    /// Per-session debounce token for "user dragged the docked
+    /// window's titlebar — decide on settle whether to snap back or
+    /// undock."
+    private var dragSettleTasks: [Session.ID: Task<Void, Never>] = [:]
+    /// Distance (px) the user has to drag a docked window's titlebar
+    /// before we treat it as an undock-by-tearing-out gesture rather
+    /// than a small nudge to be snapped back.
+    private let undockThreshold: CGFloat = 30
     /// Token for the NSApplication.didBecomeActiveNotification observer.
     private var didBecomeActiveObserver: NSObjectProtocol?
 
@@ -99,6 +112,13 @@ final class DockController: ObservableObject {
         if let cgID = AXSupport.windowID(of: window) {
             cgIDsBySession[sessionID] = cgID
         }
+        // Snapshot the window's pre-dock frame so we can restore it
+        // if the user undocks via right-click. Done before the first
+        // setFrame so we capture wherever the host app launched it.
+        let initialFrame = AXSupport.frame(of: window)
+        if !initialFrame.isEmpty {
+            preDockFrames[sessionID] = initialFrame
+        }
         // New docks become the active tab — matches the existing auto-
         // select-on-launch behavior in SessionStore. User can switch
         // away after the fact.
@@ -109,10 +129,23 @@ final class DockController: ObservableObject {
         updateMouseGate()
     }
 
-    /// Stops pinning the session's host window. The window stays where
-    /// it last was in screen space — we just stop tracking it.
-    func undock(sessionID: Session.ID) {
+    /// Stops pinning the session's host window. By default restores
+    /// the foreign window to its pre-dock frame so the released
+    /// window goes somewhere sensible. Pass `restoreFrame: false`
+    /// when the user has already moved it themselves (drag-titlebar-
+    /// out) and we don't want to fight their final position.
+    func undock(sessionID: Session.ID, restoreFrame: Bool = true) {
         guard dockedSessionIDs.contains(sessionID) else { return }
+
+        if restoreFrame,
+           let element = bindings[sessionID],
+           let preFrame = preDockFrames[sessionID],
+           !preFrame.isEmpty {
+            AXSupport.setFrame(preFrame, on: element)
+        }
+
+        dragSettleTasks[sessionID]?.cancel()
+        dragSettleTasks.removeValue(forKey: sessionID)
         dockedSessionIDs.removeAll { $0 == sessionID }
         if activeSessionID == sessionID {
             activeSessionID = dockedSessionIDs.first
@@ -122,6 +155,7 @@ final class DockController: ObservableObject {
         }
         cgIDsBySession.removeValue(forKey: sessionID)
         lastWrittenFrames.removeValue(forKey: sessionID)
+        preDockFrames.removeValue(forKey: sessionID)
         if activeSessionID != nil { raiseActive() }
         updateMouseGate()
     }
@@ -268,22 +302,61 @@ final class DockController: ObservableObject {
             // Self-caused — ignore. This is the whole point of the tracker.
             return
         }
-        // User-initiated. Phase 6 will threshold-check and undock here.
-        // For now we just log so we can verify the filter is working.
-        #if DEBUG
-        print("[DockController] User-initiated \(event.name) on docked window \(cgID)")
-        #endif
+        // User-initiated drag/resize on a docked window. Schedule a
+        // debounced evaluation — when activity stops we decide whether
+        // to snap back (small nudge) or undock (real tear-out). AX
+        // gives us no "drag ended" event so debounce is the proxy.
+        guard let sessionID = sessionID(for: event.element) else { return }
+        dragSettleTasks[sessionID]?.cancel()
+        dragSettleTasks[sessionID] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.dragSettleTasks.removeValue(forKey: sessionID)
+            self.evaluateDraggedDocked(sessionID: sessionID)
+        }
+    }
+
+    /// Decide what to do about a docked window the user just dragged
+    /// or resized. If they pulled it far enough from the dock rect,
+    /// or resized it to a different size, undock it. Otherwise snap
+    /// back to the dock rect (small nudges shouldn't release).
+    private func evaluateDraggedDocked(sessionID: Session.ID) {
+        guard let element = bindings[sessionID] else { return }
+        let current = AXSupport.frame(of: element)
+        // Resize is decisive — the user wants a different size than
+        // the dock allows. Undock without restoring (their size is
+        // what they want).
+        if current.size != dockRect.size {
+            undock(sessionID: sessionID, restoreFrame: false)
+            return
+        }
+        let dx = current.origin.x - dockRect.origin.x
+        let dy = current.origin.y - dockRect.origin.y
+        let distance = (dx * dx + dy * dy).squareRoot()
+        if distance > undockThreshold {
+            undock(sessionID: sessionID, restoreFrame: false)
+        } else {
+            // Small drag — snap back to the dock rect. The setFrame
+            // is recorded with the tracker so the resulting AX event
+            // doesn't loop us back here.
+            repositionOne(sessionID)
+        }
+    }
+
+    private func sessionID(for element: AXUIElement) -> Session.ID? {
+        bindings.first(where: { _, candidate in
+            CFEqual(candidate, element)
+        })?.key
     }
 
     private func handleDestroyEvent(_ event: AXObserver.Event) {
         // The element is gone — can't query CGWindowID anymore. Find
         // the session by scanning the cached AXUIElements. CFEqual
         // works on AX refs even after destruction (compares identity).
-        let sessionID = bindings.first(where: { _, element in
-            CFEqual(element, event.element)
-        })?.key
-        if let sessionID {
-            undock(sessionID: sessionID)
+        // Don't try to restore the frame on a destroyed window —
+        // there's nothing to set.
+        if let sessionID = sessionID(for: event.element) {
+            undock(sessionID: sessionID, restoreFrame: false)
         }
     }
 }

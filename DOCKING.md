@@ -281,6 +281,53 @@ adoption-via-click feels insufficient, otherwise defer.
 
 ---
 
+## Future enhancements (post-v1)
+
+### Drag-foreign-window-into-hub
+
+The inverse of drag-tab-out: drag an existing foreign window over the
+hub's dock area to dock it. Discussed and deferred from Phase 4
+because it requires inferring drag start/end purely from AX move
+events (macOS doesn't expose a drag-source for foreign windows).
+
+Implementation sketch:
+- Subscribe AX `kAXMovedNotification` on all candidate foreign
+  windows — apps that currently host a running claude session per
+  `ClaudeSessionFile` enumeration.
+- On each move, check the window's titlebar position against the
+  hub's dock rect (in screen coords).
+- When titlebar enters the dock rect, render a SwiftUI overlay in
+  the hub's dock area showing a "Drop to dock here" highlight.
+- After ~200ms of no further move events (proxy for "user released
+  the mouse"), if the window is still over the dock area, fire
+  `dockController.dock(...)` for it.
+
+Caveats:
+- No real "drag started/ended" events; both are inferred from the
+  timing of AX move notifications. Edges where the user pauses
+  mid-drag could trigger false drops. The 200ms threshold needs
+  empirical tuning.
+- Per-pid `AXObserver` is cheap but it's more state to manage —
+  observers on every candidate window, not just docked ones.
+- The gesture isn't standard macOS, so users won't discover it
+  without onboarding. The drop-zone highlight is what makes it
+  discoverable in practice.
+
+Files this would touch:
+- New `Sources/Services/WindowProximitySensor.swift` — manages the
+  observers on candidate foreign windows and fires a callback when
+  one enters the dock rect.
+- New SwiftUI overlay in `TabbedHostArea` for the drop highlight.
+- `DockController.dock(window:sessionID:)` already accepts an
+  AX window so the dock call itself doesn't change.
+
+Complementary to Phase 4 (adopt-from-list): drag-in is the more
+discoverable gesture once you know it exists; adopt-from-list is the
+deterministic fallback when the user can't find the right window to
+drag.
+
+---
+
 ## Open questions before coding
 
 1. **Undock trigger threshold.** How many pixels off the docked rect

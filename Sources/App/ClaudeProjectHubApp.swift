@@ -8,6 +8,7 @@ struct ClaudeProjectHubApp: App {
     @StateObject private var lifecycleMonitor: SessionLifecycleMonitor
     @StateObject private var launcherService: SessionLauncherService
     @StateObject private var dockController: DockController
+    @StateObject private var externalScanner: ExternalSessionScanner
 
     @AppStorage("appearance") private var appearance: String = "system"
 
@@ -17,11 +18,13 @@ struct ClaudeProjectHubApp: App {
         let registry = HostRegistry()
         let monitor = SessionLifecycleMonitor(store: store, windowManager: manager)
         let dock = DockController()
+        let scanner = ExternalSessionScanner(store: store, hostRegistry: registry)
         _sessionStore = StateObject(wrappedValue: store)
         _windowManager = StateObject(wrappedValue: manager)
         _hostRegistry = StateObject(wrappedValue: registry)
         _lifecycleMonitor = StateObject(wrappedValue: monitor)
         _dockController = StateObject(wrappedValue: dock)
+        _externalScanner = StateObject(wrappedValue: scanner)
         _launcherService = StateObject(wrappedValue: SessionLauncherService(
             store: store,
             windowManager: manager,
@@ -39,10 +42,12 @@ struct ClaudeProjectHubApp: App {
                 .environmentObject(lifecycleMonitor)
                 .environmentObject(launcherService)
                 .environmentObject(dockController)
+                .environmentObject(externalScanner)
                 .frame(minWidth: 900, minHeight: 600)
                 .preferredColorScheme(preferredColorScheme)
                 .onAppear {
                     lifecycleMonitor.start()
+                    externalScanner.start()
                 }
         }
         .windowStyle(.titleBar)

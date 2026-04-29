@@ -20,6 +20,14 @@ final class DockController: ObservableObject {
     /// Cached at dock time so we can identify a window in destroy events
     /// (when the AXUIElement is no longer queryable).
     private var cgIDsBySession: [Session.ID: CGWindowID] = [:]
+    /// HostID per docked session — needed to dispatch host-specific
+    /// tab-selection AppleScript when raising. Without it, two
+    /// sibling iTerm2 tabs both AXRaise the same window without
+    /// switching tabs.
+    private var hostIDsBySession: [Session.ID: String] = [:]
+    /// Tab identifier (tty for terminal hosts) per docked session.
+    /// Optional — hosts without tabs (VSCode, Xcode) leave this nil.
+    private var tabIDsBySession: [Session.ID: String] = [:]
     private var observers: [pid_t: AXObserver] = [:]
     private let tracker = AXWriteTracker()
     /// Toggles ignoresMouseEvents on the hub window based on cursor
@@ -105,12 +113,25 @@ final class DockController: ObservableObject {
     /// Adds a session's host window to the dock. Subscribes AX events
     /// for the window, writes its initial frame, raises it if it
     /// becomes the active tab.
-    func dock(window: AXUIElement, sessionID: Session.ID) {
+    ///
+    /// `hostID` and `tabID` (when known) let us switch the host's
+    /// internal tab on raise — necessary for hosts where multiple
+    /// docked sessions share one window (e.g. two iTerm2 tabs).
+    func dock(
+        window: AXUIElement,
+        sessionID: Session.ID,
+        hostID: String,
+        tabID: String? = nil
+    ) {
         guard !dockedSessionIDs.contains(sessionID) else { return }
         dockedSessionIDs.append(sessionID)
         bindings[sessionID] = window
         if let cgID = AXSupport.windowID(of: window) {
             cgIDsBySession[sessionID] = cgID
+        }
+        hostIDsBySession[sessionID] = hostID
+        if let tabID {
+            tabIDsBySession[sessionID] = tabID
         }
         // Snapshot the window's pre-dock frame so we can restore it
         // if the user undocks via right-click. Done before the first
@@ -154,10 +175,21 @@ final class DockController: ObservableObject {
             unobserve(window: element)
         }
         cgIDsBySession.removeValue(forKey: sessionID)
+        hostIDsBySession.removeValue(forKey: sessionID)
+        tabIDsBySession.removeValue(forKey: sessionID)
         lastWrittenFrames.removeValue(forKey: sessionID)
         preDockFrames.removeValue(forKey: sessionID)
         if activeSessionID != nil { raiseActive() }
         updateMouseGate()
+    }
+
+    /// Sets the tab identifier for an already-docked session. Used by
+    /// the launch flow once we know the new claude process's pid (and
+    /// can derive its controlling tty), since dock() runs before that
+    /// info is available.
+    func setTabID(sessionID: Session.ID, tabID: String) {
+        guard dockedSessionIDs.contains(sessionID) else { return }
+        tabIDsBySession[sessionID] = tabID
     }
 
     /// Switches the active tab. Raises the new active window via AX so
@@ -220,6 +252,7 @@ final class DockController: ObservableObject {
             app.activate()
         }
         AXSupport.raise(element)
+        selectActiveTab()
     }
 
     /// Raises the active window without activating its app. Used after
@@ -230,6 +263,18 @@ final class DockController: ObservableObject {
         guard let id = activeSessionID,
               let element = bindings[id] else { return }
         AXSupport.raise(element)
+        selectActiveTab()
+    }
+
+    /// Asks the host to switch its internal tab to match the active
+    /// session. No-op for hosts without tabs or without a tab ID.
+    /// Doesn't activate the host app — `tell window to select tab`
+    /// just changes the host's current tab without front-stealing.
+    private func selectActiveTab() {
+        guard let id = activeSessionID,
+              let hostID = hostIDsBySession[id],
+              let tabID = tabIDsBySession[id] else { return }
+        HostTabSelector.selectTab(hostID: hostID, tabIdentifier: tabID)
     }
 
     /// Debounced "the user stopped moving the hub" handler. While

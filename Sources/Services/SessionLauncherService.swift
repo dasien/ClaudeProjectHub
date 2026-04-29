@@ -196,6 +196,65 @@ final class SessionLauncherService: ObservableObject {
         }
     }
 
+    /// Re-binds and re-docks every session whose underlying claude
+    /// process is still alive. Called once at hub startup so adopted
+    /// (and hub-launched) sessions whose pid survived a hub restart
+    /// come back as live tabs instead of zombie closed rows.
+    func reattachAll() async {
+        // Snapshot to avoid iterating while sessions get mutated.
+        let candidates = store.sessions.filter { $0.status.isRunning && $0.pid != nil }
+        for session in candidates {
+            await reattach(session)
+        }
+        // Sync the SwiftUI selection with whichever session ended up
+        // active in DockController. Without this, the sidebar/tab bar
+        // would show no selection while the docked window is whatever
+        // got docked last.
+        if store.selectedSessionID == nil,
+           let activeID = dockController.activeSessionID {
+            store.selectedSessionID = activeID
+        }
+    }
+
+    @discardableResult
+    private func reattach(_ session: Session) async -> Bool {
+        guard let pid = session.pid else { return false }
+        guard let match = HostWindowResolver.resolve(
+            claudePID: pid,
+            registry: hostRegistry
+        ) else {
+            store.update(id: session.id) {
+                $0.status = .closed
+                $0.pid = nil
+            }
+            return false
+        }
+
+        let window: AXUIElement
+        if let cgID = match.cgWindowID,
+           let exact = await AXSupport.waitForWindow(matching: cgID, in: match.hostAppPID) {
+            window = exact
+        } else if let fallback = focusedWindow(of: match.hostAppPID)
+                ?? AXSupport.windows(of: match.hostAppPID).first {
+            window = fallback
+        } else {
+            store.update(id: session.id) {
+                $0.status = .closed
+                $0.pid = nil
+            }
+            return false
+        }
+
+        windowManager.bind(window, to: session.id)
+        dockController.dock(
+            window: window,
+            sessionID: session.id,
+            hostID: match.hostID,
+            tabID: match.tabIdentifier
+        )
+        return true
+    }
+
     /// Adopts an external claude session — one running on the
     /// machine that the hub didn't launch. Resolves the host window
     /// via `HostWindowResolver` (parent-walk first, falling back to
@@ -251,7 +310,12 @@ final class SessionLauncherService: ObservableObject {
             $0.pid = external.pid
         }
         windowManager.bind(window, to: session.id)
-        dockController.dock(window: window, sessionID: session.id)
+        dockController.dock(
+            window: window,
+            sessionID: session.id,
+            hostID: match.hostID,
+            tabID: match.tabIdentifier
+        )
         store.selectedSessionID = session.id
         return true
     }
@@ -312,10 +376,22 @@ final class SessionLauncherService: ObservableObject {
         windowManager.bind(window, to: sessionID)
         // Auto-dock newly-launched sessions. The DockController writes
         // the AX frame into the hub's dock rectangle and pins it there.
-        dockController.dock(window: window, sessionID: sessionID)
+        // tabID is filled in below once we've identified the claude
+        // pid — without it, hub-tab switching for sessions that share
+        // a host window (newTab mode) wouldn't switch the host's
+        // internal tab.
+        let hostIDForDock = store.sessions.first(where: { $0.id == sessionID })?.hostID ?? ""
+        dockController.dock(window: window, sessionID: sessionID, hostID: hostIDForDock)
 
         if let claudePID = await waitForNewClaudePID(baseline: baselinePIDs) {
             store.update(id: sessionID) { $0.pid = claudePID }
+            // Capture the tab identifier (controlling tty) so a later
+            // tab-switch in the hub can also flip the host's internal
+            // tab via HostTabSelector. Critical for newTab launches
+            // that share a host window with sibling sessions.
+            if let tty = ProcessTree.controllingTTY(of: claudePID) {
+                dockController.setTabID(sessionID: sessionID, tabID: tty)
+            }
             if let sessionFile = await ClaudeSessionFile.read(pid: claudePID, timeout: 5) {
                 // Set-once: `claude --resume <id>` assigns a NEW sessionId to
                 // the resumed process (visible in ~/.claude/sessions/<pid>.json),

@@ -48,6 +48,7 @@ struct ClaudeProjectHubApp: App {
                 .onAppear {
                     lifecycleMonitor.start()
                     externalScanner.start()
+                    Task { await launcherService.reattachAll() }
                 }
         }
         .windowStyle(.titleBar)

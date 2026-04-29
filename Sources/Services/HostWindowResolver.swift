@@ -28,35 +28,55 @@ enum HostWindowResolver {
         /// (parent-walk path) and have to fall back to the focused
         /// window at adopt time.
         let cgWindowID: CGWindowID?
+        /// Host-specific identifier for the *tab/session within the
+        /// window*. For terminal hosts this is the controlling tty
+        /// (`/dev/ttysNNN`). nil from the parent-walk path because
+        /// we only know the host app, not which tab. Used by
+        /// `HostTabSelector` to switch the host's internal tab when
+        /// the user activates a hub tab — without this, two hub
+        /// tabs pointing at sibling iTerm2 tabs both AXRaise the
+        /// same window and don't switch tabs.
+        let tabIdentifier: String?
     }
 
     static func resolve(claudePID: pid_t, registry: HostRegistry) -> Match? {
         let knownBundleIDs = Set(registry.hosts.compactMap { $0.bundleIdentifier })
 
-        // Parent walk: cheap and works for vanilla setups (Terminal,
-        // iTerm2 without restorable sessions, VSCode, etc.).
+        // tty-based lookup first when we have a tty — gives us the
+        // exact tab identity, which matters for hosts where multiple
+        // claude sessions can share one window (iTerm2 tabs).
+        let tty = ProcessTree.controllingTTY(of: claudePID)
+        if let tty {
+            for host in registry.hosts {
+                guard let bundleID = host.bundleIdentifier,
+                      let runningApp = NSRunningApplication.runningApplications(
+                          withBundleIdentifier: bundleID
+                      ).first else { continue }
+                if let cgID = ttyWindow(forHost: host, tty: tty) {
+                    return Match(
+                        hostID: host.id,
+                        hostAppPID: runningApp.processIdentifier,
+                        cgWindowID: cgID,
+                        tabIdentifier: tty
+                    )
+                }
+            }
+        }
+
+        // Fall back to parent-PID walk for hosts without an
+        // AppleScript-by-tty story (or terminals where the user
+        // configured something custom). Returns the host app's PID
+        // but no specific window or tab.
         if let hostPID = ProcessTree.findHostAppPID(for: claudePID, knownBundleIDs: knownBundleIDs),
            let app = NSRunningApplication(processIdentifier: hostPID),
            let bundleID = app.bundleIdentifier,
            let host = registry.hosts.first(where: { $0.bundleIdentifier == bundleID }) {
-            return Match(hostID: host.id, hostAppPID: hostPID, cgWindowID: nil)
-        }
-
-        // tty-based lookup: handles iTermServer, tmux, and other
-        // setups where the process tree goes sideways.
-        guard let tty = ProcessTree.controllingTTY(of: claudePID) else { return nil }
-        for host in registry.hosts {
-            guard let bundleID = host.bundleIdentifier,
-                  let runningApp = NSRunningApplication.runningApplications(
-                      withBundleIdentifier: bundleID
-                  ).first else { continue }
-            if let cgID = ttyWindow(forHost: host, tty: tty) {
-                return Match(
-                    hostID: host.id,
-                    hostAppPID: runningApp.processIdentifier,
-                    cgWindowID: cgID
-                )
-            }
+            return Match(
+                hostID: host.id,
+                hostAppPID: hostPID,
+                cgWindowID: nil,
+                tabIdentifier: tty
+            )
         }
         return nil
     }

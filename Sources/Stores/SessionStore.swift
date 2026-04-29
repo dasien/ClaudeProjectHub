@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Combine
 
@@ -51,20 +52,32 @@ final class SessionStore: ObservableObject {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let decoded = try? decoder.decode([Session].self, from: data) else { return }
-        // Transient runtime fields don't survive a hub restart, and we don't
-        // yet have process re-attachment, so any session that was .running
-        // before the hub quit must be considered .closed now. Otherwise the
-        // sidebar would show zombie "running" rows whose AX windows no longer
-        // exist, which breaks tab docking for the actually-live session.
+        // Transient AX bindings don't survive a hub restart. The pid does
+        // — if the underlying claude process is still alive, the session
+        // is still running and `SessionLauncherService.reattachAll()` will
+        // re-bind its host window after launch. If the process is dead,
+        // mark the session closed and clear the stale pid.
         sessions = decoded.map { stored in
             var s = stored
-            s.pid = nil
             s.hostWindowID = nil
             if s.status.isRunning {
-                s.status = .closed
+                if let pid = s.pid, SessionStore.pidIsAlive(pid) {
+                    // Status is reset to .idle; lifecycle monitor will
+                    // promote to .working once it polls the session file.
+                    s.status = .idle
+                } else {
+                    s.pid = nil
+                    s.status = .closed
+                }
             }
             return s
         }
+    }
+
+    /// `kill(pid, 0)` succeeds (or returns EPERM) iff the process exists.
+    /// Reasonable proxy for "is this pid still a live claude."
+    private static func pidIsAlive(_ pid: pid_t) -> Bool {
+        kill(pid, 0) == 0 || errno == EPERM
     }
 
     private func save() {

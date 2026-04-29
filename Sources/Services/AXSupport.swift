@@ -28,14 +28,86 @@ enum AXSupport {
     }
 
     static func setFrame(_ frame: CGRect, on element: AXUIElement) {
-        var origin = frame.origin
-        if let value = AXValueCreate(.cgPoint, &origin) {
+        setPosition(frame.origin, on: element)
+        setSize(frame.size, on: element)
+    }
+
+    /// Writes `kAXPositionAttribute` only. Splitting position and size
+    /// writes lets callers skip redundant work — e.g. during a hub
+    /// drag the size never changes, so writing it 60 times a second
+    /// is wasted IPC.
+    static func setPosition(_ point: CGPoint, on element: AXUIElement) {
+        var p = point
+        if let value = AXValueCreate(.cgPoint, &p) {
             AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
         }
-        var size = frame.size
-        if let value = AXValueCreate(.cgSize, &size) {
+    }
+
+    /// Writes `kAXSizeAttribute` only.
+    static func setSize(_ size: CGSize, on element: AXUIElement) {
+        var s = size
+        if let value = AXValueCreate(.cgSize, &s) {
             AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value)
         }
+    }
+
+    /// Position-only write that records the AX write with a tracker so
+    /// the resulting notification can be filtered out as not user-
+    /// initiated. Returns the window's CGWindowID for tracker keying.
+    static func setPosition(
+        _ point: CGPoint,
+        on element: AXUIElement,
+        windowID: CGWindowID,
+        tracker: AXWriteTracker
+    ) {
+        tracker.recordWrite(window: windowID, attribute: kAXPositionAttribute as String)
+        setPosition(point, on: element)
+    }
+
+    /// Size-only counterpart to the tracked `setPosition`.
+    static func setSize(
+        _ size: CGSize,
+        on element: AXUIElement,
+        windowID: CGWindowID,
+        tracker: AXWriteTracker
+    ) {
+        tracker.recordWrite(window: windowID, attribute: kAXSizeAttribute as String)
+        setSize(size, on: element)
+    }
+
+    /// `setFrame` variant that records the position/size writes with a
+    /// tracker so the corresponding AX notifications can be filtered
+    /// out as not-user-initiated. Pass the window's CGWindowID — the
+    /// tracker uses it as its key.
+    static func setFrame(
+        _ frame: CGRect,
+        on element: AXUIElement,
+        windowID: CGWindowID,
+        tracker: AXWriteTracker
+    ) {
+        setPosition(frame.origin, on: element, windowID: windowID, tracker: tracker)
+        setSize(frame.size, on: element, windowID: windowID, tracker: tracker)
+    }
+
+    /// Reads the window's current frame from AX. Returns `.zero` if
+    /// either attribute is unavailable.
+    static func frame(of element: AXUIElement) -> CGRect {
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+
+        var posValue: AnyObject?
+        if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posValue) == .success,
+           let pos = posValue {
+            AXValueGetValue(pos as! AXValue, .cgPoint, &origin)
+        }
+
+        var sizeValue: AnyObject?
+        if AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+           let sz = sizeValue {
+            AXValueGetValue(sz as! AXValue, .cgSize, &size)
+        }
+
+        return CGRect(origin: origin, size: size)
     }
 
     static func raise(_ element: AXUIElement) {

@@ -8,12 +8,19 @@ final class SessionLauncherService: ObservableObject {
     private let store: SessionStore
     private let windowManager: WindowManager
     private let hostRegistry: HostRegistry
+    private let dockController: DockController
     private var hasRequestedAccessibility = false
 
-    init(store: SessionStore, windowManager: WindowManager, hostRegistry: HostRegistry) {
+    init(
+        store: SessionStore,
+        windowManager: WindowManager,
+        hostRegistry: HostRegistry,
+        dockController: DockController
+    ) {
         self.store = store
         self.windowManager = windowManager
         self.hostRegistry = hostRegistry
+        self.dockController = dockController
     }
 
     /// Checks Accessibility access and either returns true (proceed) or
@@ -229,6 +236,9 @@ final class SessionLauncherService: ObservableObject {
         }
 
         windowManager.bind(window, to: sessionID)
+        // Auto-dock newly-launched sessions. The DockController writes
+        // the AX frame into the hub's dock rectangle and pins it there.
+        dockController.dock(window: window, sessionID: sessionID)
 
         if let claudePID = await waitForNewClaudePID(baseline: baselinePIDs) {
             store.update(id: sessionID) { $0.pid = claudePID }

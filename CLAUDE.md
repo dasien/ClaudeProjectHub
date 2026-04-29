@@ -300,6 +300,15 @@ log stream --predicate 'process == "tccd" AND (eventMessage CONTAINS "ClaudeProj
 
 ### Open
 
+#### Docking (current focus, branch `docking`) — 2026-04-29
+
+The hub's central value prop and the next major focus, promoted out
+of the deferred list. Foreign windows pinned to a hub-owned dock area
+via AX (no SkyLight, no reparenting). Detailed plan and UX scenarios
+in [DOCKING.md](DOCKING.md). Phase 0 starts with auditing what's
+already in `WindowManager.swift` / `AXSupport.swift` and reviewing
+the previous deferred docking work in git history.
+
 #### M7 remainder
 
 The "big 3 IDEs" we want to support:
@@ -326,7 +335,6 @@ This file (CLAUDE.md) and README.md are part of M9. Still open:
 ### Deferred (no milestone, available anytime)
 
 - **Smart bundled-script updates** — `HostRegistry.copyBundledScriptsIfMissing` only copies a bundled `.applescript` when the user's copy doesn't exist. So when we ship a fix to a default script (e.g. iterm2.applescript), existing installs keep their old copy and the user has to `rm` it manually to pick up the change. Fix: ship a hash sidecar (`.shipped.json` in the scripts dir) recording the SHA of each script as last shipped. On launch, hash the user's file — if it still matches the recorded SHA, they haven't edited it, so safely overwrite with the new bundle and update the sidecar. If it differs, leave alone. Distinguishes "user edited" from "we re-shipped" without timestamps.
-- **Tab-area docking** — snap host windows into the hub's right pane via AX positioning. Originally v1's centerpiece, deferred 2026-04-26 due to coord/timing fragility before the rest of v1 worked. The AX discovery infrastructure is in place (per-session window bindings, marker-titled tabs); reviving docking means rebuilding the `WindowManager.updateTabFrame` + `TabFrameReader` path with what we've learned.
 - **Undocking** — depends on docking shipping first.
 - **External session adoption** — enumerate `~/.claude/sessions/*.json` to find every running claude on the machine, including ones the hub didn't launch. `ClaudeSessionFile` is the foundation. Filter `kind == "interactive" && entrypoint == "cli"` to avoid sub-process / plugin sessions.
 

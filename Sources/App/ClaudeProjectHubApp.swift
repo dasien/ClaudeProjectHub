@@ -7,6 +7,7 @@ struct ClaudeProjectHubApp: App {
     @StateObject private var hostRegistry: HostRegistry
     @StateObject private var lifecycleMonitor: SessionLifecycleMonitor
     @StateObject private var launcherService: SessionLauncherService
+    @StateObject private var dockController: DockController
 
     @AppStorage("appearance") private var appearance: String = "system"
 
@@ -15,14 +16,17 @@ struct ClaudeProjectHubApp: App {
         let manager = WindowManager()
         let registry = HostRegistry()
         let monitor = SessionLifecycleMonitor(store: store, windowManager: manager)
+        let dock = DockController()
         _sessionStore = StateObject(wrappedValue: store)
         _windowManager = StateObject(wrappedValue: manager)
         _hostRegistry = StateObject(wrappedValue: registry)
         _lifecycleMonitor = StateObject(wrappedValue: monitor)
+        _dockController = StateObject(wrappedValue: dock)
         _launcherService = StateObject(wrappedValue: SessionLauncherService(
             store: store,
             windowManager: manager,
-            hostRegistry: registry
+            hostRegistry: registry,
+            dockController: dock
         ))
     }
 
@@ -34,6 +38,7 @@ struct ClaudeProjectHubApp: App {
                 .environmentObject(hostRegistry)
                 .environmentObject(lifecycleMonitor)
                 .environmentObject(launcherService)
+                .environmentObject(dockController)
                 .frame(minWidth: 900, minHeight: 600)
                 .preferredColorScheme(preferredColorScheme)
                 .onAppear {

@@ -255,10 +255,29 @@ Letting docked windows out:
   `userInitiated == true` → if new origin is > N pixels from the
   docked rect, unregister.
 
-### Phase 7 — Drag-from-sidebar (scenario 3)
+### Phase 7 — Drag-from-sidebar (scenario 3) — fully deferred
 
-Optional: SwiftUI drag from sidebar row to tab area. Nice-to-have if
-adoption-via-click feels insufficient, otherwise defer.
+Both the sidebar `.onDrag` and the `detailArea` `.onDrop` were
+attempted and ripped back out. Two reasons:
+
+1. `.onDrag` on List rows on macOS captures the row's tap gesture and
+   breaks single-click selection.
+2. `.onDrop` on the dock area appears to interact with the OS's
+   drag-vs-click resolution at the window level — clicks-without-
+   moving on sidebar rows started failing intermittently after we
+   added it (drag candidates have a "wait to see if this is a drag"
+   delay that resolves only when the user moves or releases). Pulled
+   the drop target out and that fixed it.
+
+Right-click menu actions cover the same workflow:
+- Sessions section → running session → "Dock" (re-dock if free-
+  floating; hidden if already docked).
+- Available to Dock section → external session → "Adopt and Dock".
+
+To revive drag-and-drop later it'd need a sandboxed approach: drop
+target on a child NSView with its own NSWindow-level drag scoping
+that doesn't leak into sidebar hit testing. Not worth the scope
+for a "nice to have" gesture when the right-click path works.
 
 ### Phase 8 — Edge cases
 

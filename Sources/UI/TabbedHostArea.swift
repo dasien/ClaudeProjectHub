@@ -44,13 +44,19 @@ struct TabbedHostArea: View {
                 ForEach(Array(runningSessions.enumerated()), id: \.element.id) { index, session in
                     TabChip(
                         title: session.displayTitle,
+                        host: hostRegistry.host(forID: session.hostID),
                         isActive: session.id == store.selectedSessionID
                     ) {
-                        // Always focus, even if this tab is already selected:
-                        // setting the binding to the same value wouldn't trigger
-                        // an onChange-based focus path.
                         store.selectedSessionID = session.id
-                        windowManager.focus(session.id)
+                        // Same reasoning as the sidebar tap — DockController
+                        // raises (without activating) docked sessions via
+                        // the .onChange sync in MainView. Only fire
+                        // windowManager.focus for sessions that are running
+                        // but not currently docked, where there's no other
+                        // path to bring the foreign window forward.
+                        if !dockController.dockedSessionIDs.contains(session.id) {
+                            windowManager.focus(session.id)
+                        }
                     }
                     // Cmd-1..Cmd-9 switch to the Nth tab. Matches the
                     // browser/IDE convention. Tabs past 9 get no
@@ -70,7 +76,7 @@ struct TabbedHostArea: View {
             }
             .padding(.horizontal, 8)
         }
-        .frame(height: 32)
+        .frame(height: 40)
         // Tab bar needs an explicit background — the hub window itself
         // is transparent (so the dock area can be a click-through hole),
         // and SwiftUI views without backgrounds would show through.
@@ -121,18 +127,25 @@ struct TabbedHostArea: View {
 
 private struct TabChip: View {
     let title: String
+    let host: HostConfig?
     let isActive: Bool
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
-            Text(title)
-                .lineLimit(1)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
-                .foregroundStyle(isActive ? Color.accentColor : .primary)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+            HStack(spacing: 8) {
+                if let host {
+                    HostIconView(host: host, size: 18)
+                }
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
+            .foregroundStyle(isActive ? Color.accentColor : .primary)
+            .clipShape(RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
     }

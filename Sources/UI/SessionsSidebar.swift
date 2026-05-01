@@ -7,6 +7,7 @@ struct SessionsSidebar: View {
     @EnvironmentObject private var lifecycle: SessionLifecycleMonitor
     @EnvironmentObject private var externalScanner: ExternalSessionScanner
     @EnvironmentObject private var hostRegistry: HostRegistry
+    @EnvironmentObject private var dockController: DockController
     @Environment(\.openSettings) private var openSettings
 
     @State private var newSessionPresented = false
@@ -22,11 +23,16 @@ struct SessionsSidebar: View {
                         .contextMenu {
                             menuItems(for: session)
                         }
-                        .simultaneousGesture(TapGesture().onEnded {
-                            if session.status.isRunning {
-                                windowManager.focus(session.id)
-                            }
-                        })
+                        // No simultaneousGesture / onDrag on List
+                        // rows on macOS — both compete with List's
+                        // own selection gesture and produce
+                        // intermittent failures where the gesture
+                        // fires but the selection binding never
+                        // updates. The diagnostic output (gesture
+                        // fires but no [publish] SessionStore on
+                        // failed clicks) made this clear. Side
+                        // effects driven by selection live in
+                        // MainView.onChange instead.
                 }
             }
             if !externalScanner.sessions.isEmpty {
@@ -38,6 +44,11 @@ struct SessionsSidebar: View {
                                     Task { await adopt(external) }
                                 }
                             }
+                            // Same caveat as the running-session rows
+                            // above: .onDrag on a List row absorbs
+                            // click events. Right-click → Adopt and
+                            // Dock is the supported path until we add
+                            // a proper drag handle.
                     }
                 }
             }
@@ -84,6 +95,22 @@ struct SessionsSidebar: View {
         }
     }
 
+    /// Re-dock a running session that's currently free-floating
+    /// (e.g. user undocked it earlier via drag-titlebar-out or
+    /// right-click). Reuses the AX window binding still held in
+    /// WindowManager and re-derives the host's tty for tab switching.
+    private func redock(_ session: Session) {
+        guard let window = windowManager.binding(for: session.id) else { return }
+        let tabID: String? = session.pid.flatMap { ProcessTree.controllingTTY(of: $0) }
+        dockController.dock(
+            window: window,
+            sessionID: session.id,
+            hostID: session.hostID,
+            tabID: tabID
+        )
+        store.selectedSessionID = session.id
+    }
+
     @ViewBuilder
     private func menuItems(for session: Session) -> some View {
         switch session.status {
@@ -91,6 +118,11 @@ struct SessionsSidebar: View {
             Button("Show") {
                 store.selectedSessionID = session.id
                 windowManager.focus(session.id)
+            }
+            if !dockController.dockedSessionIDs.contains(session.id) {
+                Button("Dock") {
+                    redock(session)
+                }
             }
             Button("Rename…") { sessionToRename = session }
             Button("Close") {

@@ -179,7 +179,11 @@ final class DockController: ObservableObject {
         tabIDsBySession.removeValue(forKey: sessionID)
         lastWrittenFrames.removeValue(forKey: sessionID)
         preDockFrames.removeValue(forKey: sessionID)
-        if activeSessionID != nil { raiseActive() }
+        // Don't activate the new active's host app — the user just
+        // closed something; pulling focus over to a sibling foreign
+        // window would be jarring. AX raise alone keeps the right
+        // window visible through the transparent dock area.
+        if activeSessionID != nil { raiseActiveWithoutFocus() }
         updateMouseGate()
     }
 
@@ -192,16 +196,25 @@ final class DockController: ObservableObject {
         tabIDsBySession[sessionID] = tabID
     }
 
-    /// Switches the active tab. Raises the new active window via AX so
-    /// it lands on top of any other docked windows in the same rect.
-    /// Repositions the new active first because, with the active-only
-    /// optimization, inactive tabs may have stale frames from before
-    /// the last hub move/resize settled.
+    /// Switches the active tab. Raises the new active window via AX
+    /// (without activating the host app) so it lands on top of any
+    /// other docked windows in the same rect. Repositions the new
+    /// active first because, with the active-only optimization,
+    /// inactive tabs may have stale frames from before the last hub
+    /// move/resize settled.
+    ///
+    /// Doesn't activate the host app on purpose: tab/sidebar clicks
+    /// are "browse" gestures — the user is interacting with the hub.
+    /// Activation steals keyboard focus from the hub, which causes
+    /// the perceived flicker on every sidebar click. If the user
+    /// wants to interact with the docked window directly, they click
+    /// inside the dock area (click-through to the foreign window
+    /// activates it via the OS).
     func setActiveSessionID(_ id: Session.ID?) {
         guard activeSessionID != id else { return }
         activeSessionID = id
         repositionActive()
-        raiseActive()
+        raiseActiveWithoutFocus()
     }
 
     // MARK: - Layout

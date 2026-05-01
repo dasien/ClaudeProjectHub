@@ -13,13 +13,15 @@ import Foundation
 /// the next window. `ignoresMouseEvents` is the property that makes
 /// the OS treat the window as transparent to clicks.
 ///
-/// Two NSEvent monitors are needed:
-///   - **Local** for cursor moves while the window is interactive
-///     (so we can detect when the cursor enters the dock area).
-///   - **Global** for cursor moves while the window is ignoring
-///     events (so we can detect when the cursor leaves the dock
-///     area — local monitors don't fire when ignoresMouseEvents is
-///     true because the events go to whichever window is below).
+/// Implementation: a 30Hz timer polls `NSEvent.mouseLocation` and
+/// updates `ignoresMouseEvents` based on whether the cursor is in
+/// the dock rect. We tried event-driven updates via NSEvent
+/// monitors (`addLocalMonitorForEvents` for mouseMoved) but those
+/// only fire when the cursor *moves* — if the user clicks without
+/// moving (e.g. after a Cmd-Tab teleport), the gate's state is
+/// whatever it was last set to, which led to clicks intermittently
+/// passing through the sidebar. Polling guarantees the state is
+/// current before any click event is processed.
 @MainActor
 final class HubMouseGate {
     private weak var window: NSWindow?
@@ -30,13 +32,11 @@ final class HubMouseGate {
     /// clicks normally then, so they don't leak through to the
     /// desktop.
     private var enabled: Bool = false
-
-    private var globalMonitor: Any?
-    private var localMonitor: Any?
+    private var pollTimer: Timer?
 
     func attach(to window: NSWindow) {
         self.window = window
-        startMonitoring()
+        startPolling()
         evaluate()
     }
 
@@ -49,15 +49,21 @@ final class HubMouseGate {
         evaluate()
     }
 
-    private func startMonitoring() {
-        guard globalMonitor == nil else { return }
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
-            Task { @MainActor in self?.evaluate() }
+    private func startPolling() {
+        guard pollTimer == nil else { return }
+        // 30Hz is plenty for tracking cursor position relative to a
+        // window region. NSEvent.mouseLocation is a cheap static
+        // query — no IPC, no allocations — so the per-tick cost is
+        // negligible.
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.evaluate()
+            }
         }
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
-            Task { @MainActor in self?.evaluate() }
-            return event
-        }
+        // Add to common modes so the timer keeps firing during
+        // window resize/drag tracking, modal panels, etc.
+        RunLoop.main.add(timer, forMode: .common)
+        pollTimer = timer
     }
 
     private func evaluate() {
@@ -88,7 +94,6 @@ final class HubMouseGate {
     }
 
     deinit {
-        if let monitor = globalMonitor { NSEvent.removeMonitor(monitor) }
-        if let monitor = localMonitor { NSEvent.removeMonitor(monitor) }
+        pollTimer?.invalidate()
     }
 }

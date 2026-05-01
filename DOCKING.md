@@ -279,17 +279,25 @@ target on a child NSView with its own NSWindow-level drag scoping
 that doesn't leak into sidebar hit testing. Not worth the scope
 for a "nice to have" gesture when the right-click path works.
 
-### Phase 8 — Edge cases
+### Phase 8 — Minimize edge cases (narrowed)
 
-- Multi-monitor — pick which screen the hub is on, bound docked
-  windows to that screen.
-- AX trust loss mid-session — if user revokes permissions, gracefully
-  release all docked windows and surface an error.
-- Hub minimized — pause docked-window tracking; on restore, re-snap
-  positions.
-- Foreign app quit — unbind, move session to closed.
-- Foreign window minimized by user — release tracking? Hide tab?
-  TBD, design call.
+Only the hub-minimized and foreign-window-minimized cases live here
+now; multi-monitor and AX-trust-loss were moved to the deferred
+list as separate items.
+
+- **Hub minimized** — pause docked-window tracking; on restore,
+  re-snap positions to the new dock rect. Foreign windows
+  shouldn't follow the hub into the dock (or wherever minimized
+  windows go); they should hide alongside the hub and reappear
+  with it.
+- **Foreign window minimized by user** — design call: do we hide
+  the tab from the tab bar (recreating it on un-minimize)? Release
+  tracking entirely (treat as undock)? Leave the tab visible but
+  greyed out? Probably the third — preserves the user's session
+  list, makes the un-minimize gesture obvious.
+- **Foreign app quit** — already handled by AX destroy events
+  triggering `undock(restoreFrame: false)`; mentioned here for
+  completeness.
 
 ### Phase 9 — Polish
 

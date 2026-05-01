@@ -289,8 +289,10 @@ log stream --predicate 'process == "tccd" AND (eventMessage CONTAINS "ClaudeProj
 - **M1–M4**: skeleton, launch, focus, lifecycle (auto-close on PID exit + manual Close)
 - **M5**: Terminal warm-start AX raise + Cmd-T/N keystroke + tab-count-diff polling
 - **M6**: JSON host registry — `HostConfig` + `HostRegistry` + strategy-based dispatch
-- **M7 (partial)**: iTerm2 shipped as first non-Terminal host (direct CGWindowID lookup)
 - **M7 — script-driven hosts** (2026-04-28): collapsed `TerminalAppLauncher` / `ITerm2Launcher` / `ProcessLauncher` into a single `ScriptedHostLauncher`. Every host is now one `.applescript` file in `~/Library/Application Support/ClaudeProjectHub/scripts/`; defaults ship in the bundle. New hosts are added through Settings → Hosts (Display Name + Choose Application + auto-slug), and the user can drop in any host with a script — no Swift code change needed. Dropped `HostStrategy` / `BuiltinKind` from the model.
+- **M7 hosts shipped**: Terminal, iTerm2 (direct CGWindowID lookup, with iTermServer/tmux fallback via controlling-tty matching), VSCode (integrated-terminal launch via System Events keystroke).
+- **Docking phases 1-6** (2026-04-30): foreign windows pinned to the hub's dock rect via AX. Hub window is transparent at the dock area with `HubMouseGate` toggling `ignoresMouseEvents` so clicks pass through to the foreign window. Spawn-into-dock, drag-titlebar-out + 30px-threshold-snap-back undocking, right-click "Undock", external session adoption via `ExternalSessionScanner` + sidebar "Available to Dock" section, Cmd-1..9 tab keyboard shortcuts, per-tab AppleScript switching for hosts that share a window across multiple sessions (iTerm2 tabs, Terminal tabs). See [DOCKING.md](DOCKING.md) for the design and the lessons learned.
+- **Reattach on hub restart**: sessions whose underlying claude pid is still alive are re-bound and re-docked at startup via `SessionLauncherService.reattachAll()`. Dead pids are marked closed.
 - Resume from closed sessions (with stale-`claudeSessionId` recovery + empty-conversation guard)
 - Idle/working status detection from `~/.claude/sessions/<pid>.json`
 - Auto-select new session on launch
@@ -300,20 +302,10 @@ log stream --predicate 'process == "tccd" AND (eventMessage CONTAINS "ClaudeProj
 
 ### Open
 
-#### Docking (current focus, branch `docking`) — 2026-04-29
-
-The hub's central value prop and the next major focus, promoted out
-of the deferred list. Foreign windows pinned to a hub-owned dock area
-via AX (no SkyLight, no reparenting). Detailed plan and UX scenarios
-in [DOCKING.md](DOCKING.md). Phase 0 starts with auditing what's
-already in `WindowManager.swift` / `AXSupport.swift` and reviewing
-the previous deferred docking work in git history.
-
 #### M7 remainder
 
-The "big 3 IDEs" we want to support:
+The "big 3 IDEs" — VSCode is shipped, two left:
 
-- **VSCode**: `code <dir>` CLI + the Claude extension's "start session" command. Trigger mechanism is the open question (URL scheme, keyboard synthesis, or `code --command`). Investigation needed.
 - **Xcode**: the odd one out — Xcode doesn't have an integrated terminal we can drive AppleScript into. Likely approach: open the project in Xcode AND spawn a separate Terminal/iTerm window with `claude` in the same dir, treating both as part of one logical "session." Needs design before implementation.
 - **Android Studio**: IntelliJ-based, similar to other JetBrains products. Has an integrated terminal pane and a plugin system. Claude Code's Studio support, when it exists, will likely look like its JetBrains plugin behavior.
 
@@ -332,11 +324,33 @@ This file (CLAUDE.md) and README.md are part of M9. Still open:
 - **INTEGRATIONS_GUIDE.md** — how to add a new host: pick an app, edit its `.applescript` from `_template.applescript`, document the placeholder contract and the AX-diff fallback. Cross-reference the lessons in this file.
 - **USER_GUIDE.md** — end-user flows: new session, resume, rename, adding a host through Settings or by editing `hosts.json` + a script directly.
 
+#### M10 — Idle session notifications
+
+Surface a notification (banner via `UserNotifications` framework, dock badge with count, or both — pick what's HIG-compliant) when a Claude session transitions from `.working` → `.idle`. Trigger lives in `SessionLifecycleMonitor` where the status flip is already detected.
+
+The user-value is "your session needs you" — claude is sitting waiting for input or asking a question, but the user might be in another app and wouldn't otherwise know.
+
+Considerations:
+- Don't notify if the hub is the active app (user can already see).
+- Don't notify on the *initial* idle (first state read after launch — the session was always idle, didn't transition).
+- Throttle: a single user keystroke can flip the state to working briefly then back to idle within a second; debounce or only notify if idle for some minimum duration.
+- Settings toggle to disable notifications globally.
+- Click action on the notification: focus that session in the hub.
+
+Authorization: request via `UNUserNotificationCenter.current().requestAuthorization` on first launch (similar to the AX permission flow), gracefully degrade if denied.
+
+#### Docking remaining phases (per [DOCKING.md](DOCKING.md))
+
+- **Phase 8 (narrowed)** — handle the hub being minimized (pause docked-window tracking; on restore, re-snap positions) and foreign windows being minimized by the user (release tracking? hide tab? design call). Multi-monitor and AX-trust-loss moved to Deferred.
+- **Phase 9 polish** — tab icons + larger chips shipped. Remaining: animation on dock/undock, tab thumbnails (would use ScreenCaptureKit), drag-to-reorder tabs.
+
 ### Deferred (no milestone, available anytime)
 
 - **Smart bundled-script updates** — `HostRegistry.copyBundledScriptsIfMissing` only copies a bundled `.applescript` when the user's copy doesn't exist. So when we ship a fix to a default script (e.g. iterm2.applescript), existing installs keep their old copy and the user has to `rm` it manually to pick up the change. Fix: ship a hash sidecar (`.shipped.json` in the scripts dir) recording the SHA of each script as last shipped. On launch, hash the user's file — if it still matches the recorded SHA, they haven't edited it, so safely overwrite with the new bundle and update the sidecar. If it differs, leave alone. Distinguishes "user edited" from "we re-shipped" without timestamps.
-- **Undocking** — depends on docking shipping first.
-- **External session adoption** — enumerate `~/.claude/sessions/*.json` to find every running claude on the machine, including ones the hub didn't launch. `ClaudeSessionFile` is the foundation. Filter `kind == "interactive" && entrypoint == "cli"` to avoid sub-process / plugin sessions.
+- **Drag-foreign-window-into-hub** — proximity-based dock via AX move observers on candidate windows + a SwiftUI drop-zone overlay. Discussed in DOCKING.md's "Future enhancements" section.
+- **Multi-monitor edge cases** — pin docked windows to the hub's screen, follow the hub if the user drags it to a different display, behave correctly across mixed-DPI setups. Today's code mostly works (NSWindow.convertToScreen handles screen coords), but hasn't been tested rigorously across configurations.
+- **AX-trust-loss handling** — if the user revokes Accessibility permission mid-session, gracefully release docked windows and surface an error rather than silently malfunctioning.
+- **Eliminate the two "Publishing changes from within view updates" warnings** — currently fire on every successful sidebar/tab click. Don't appear to cause observable bugs (the noisy bug was the simultaneousGesture cascade we already removed), but ideally fix by routing the active-tab sync through a Combine subscription on `store.$selectedSessionID` in `DockController.init` instead of `.onChange` in MainView.
 
 ---
 

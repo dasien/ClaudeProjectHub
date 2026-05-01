@@ -9,6 +9,7 @@ struct SessionsSidebar: View {
     @EnvironmentObject private var hostRegistry: HostRegistry
     @EnvironmentObject private var dockController: DockController
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
     @State private var newSessionPresented = false
     @State private var sessionToRename: Session?
@@ -128,13 +129,20 @@ struct SessionsSidebar: View {
             Button("Close") {
                 lifecycle.close(session.id)
             }
+            Divider()
+            Button("Get Info") {
+                openWindow(id: "session-info", value: session.id)
+            }
         case .closed:
             Button("Resume…") { sessionToResume = session }
                 .disabled(session.claudeSessionId == nil)
             Button("Rename…") { sessionToRename = session }
-            Divider()
             Button("Remove from List", role: .destructive) {
                 store.remove(id: session.id)
+            }
+            Divider()
+            Button("Get Info") {
+                openWindow(id: "session-info", value: session.id)
             }
         }
     }

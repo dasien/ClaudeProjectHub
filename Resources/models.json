@@ -1,0 +1,166 @@
+{
+  "metadata": {
+    "asOf": "2026-05",
+    "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "currency": "USD"
+  },
+  "fallback": null,
+  "models": [
+    {
+      "id": "claude-opus-4-7",
+      "displayName": "Claude Opus 4.7",
+      "patterns": ["claude-opus-4-7*"],
+      "pricing": {
+        "input": 5.00,
+        "output": 25.00,
+        "cacheWrite5m": 6.25,
+        "cacheWrite1h": 10.00,
+        "cacheRead": 0.50
+      }
+    },
+    {
+      "id": "claude-opus-4-6",
+      "displayName": "Claude Opus 4.6",
+      "patterns": ["claude-opus-4-6*"],
+      "pricing": {
+        "input": 5.00,
+        "output": 25.00,
+        "cacheWrite5m": 6.25,
+        "cacheWrite1h": 10.00,
+        "cacheRead": 0.50
+      }
+    },
+    {
+      "id": "claude-opus-4-5",
+      "displayName": "Claude Opus 4.5",
+      "patterns": ["claude-opus-4-5*"],
+      "pricing": {
+        "input": 5.00,
+        "output": 25.00,
+        "cacheWrite5m": 6.25,
+        "cacheWrite1h": 10.00,
+        "cacheRead": 0.50
+      }
+    },
+    {
+      "id": "claude-opus-4-1",
+      "displayName": "Claude Opus 4.1",
+      "patterns": ["claude-opus-4-1*"],
+      "pricing": {
+        "input": 15.00,
+        "output": 75.00,
+        "cacheWrite5m": 18.75,
+        "cacheWrite1h": 30.00,
+        "cacheRead": 1.50
+      }
+    },
+    {
+      "id": "claude-opus-4",
+      "displayName": "Claude Opus 4",
+      "patterns": ["claude-opus-4*"],
+      "pricing": {
+        "input": 15.00,
+        "output": 75.00,
+        "cacheWrite5m": 18.75,
+        "cacheWrite1h": 30.00,
+        "cacheRead": 1.50
+      }
+    },
+    {
+      "id": "claude-opus-3",
+      "displayName": "Claude Opus 3 (deprecated)",
+      "patterns": ["claude-opus-3*"],
+      "pricing": {
+        "input": 15.00,
+        "output": 75.00,
+        "cacheWrite5m": 18.75,
+        "cacheWrite1h": 30.00,
+        "cacheRead": 1.50
+      }
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "displayName": "Claude Sonnet 4.6",
+      "patterns": ["claude-sonnet-4-6*"],
+      "pricing": {
+        "input": 3.00,
+        "output": 15.00,
+        "cacheWrite5m": 3.75,
+        "cacheWrite1h": 6.00,
+        "cacheRead": 0.30
+      }
+    },
+    {
+      "id": "claude-sonnet-4-5",
+      "displayName": "Claude Sonnet 4.5",
+      "patterns": ["claude-sonnet-4-5*"],
+      "pricing": {
+        "input": 3.00,
+        "output": 15.00,
+        "cacheWrite5m": 3.75,
+        "cacheWrite1h": 6.00,
+        "cacheRead": 0.30
+      }
+    },
+    {
+      "id": "claude-sonnet-4",
+      "displayName": "Claude Sonnet 4",
+      "patterns": ["claude-sonnet-4*"],
+      "pricing": {
+        "input": 3.00,
+        "output": 15.00,
+        "cacheWrite5m": 3.75,
+        "cacheWrite1h": 6.00,
+        "cacheRead": 0.30
+      }
+    },
+    {
+      "id": "claude-sonnet-3-7",
+      "displayName": "Claude Sonnet 3.7 (deprecated)",
+      "patterns": ["claude-sonnet-3-7*", "claude-3-7-sonnet*"],
+      "pricing": {
+        "input": 3.00,
+        "output": 15.00,
+        "cacheWrite5m": 3.75,
+        "cacheWrite1h": 6.00,
+        "cacheRead": 0.30
+      }
+    },
+    {
+      "id": "claude-haiku-4-5",
+      "displayName": "Claude Haiku 4.5",
+      "patterns": ["claude-haiku-4-5*"],
+      "pricing": {
+        "input": 1.00,
+        "output": 5.00,
+        "cacheWrite5m": 1.25,
+        "cacheWrite1h": 2.00,
+        "cacheRead": 0.10
+      }
+    },
+    {
+      "id": "claude-haiku-3-5",
+      "displayName": "Claude Haiku 3.5",
+      "patterns": ["claude-haiku-3-5*", "claude-3-5-haiku*"],
+      "pricing": {
+        "input": 0.80,
+        "output": 4.00,
+        "cacheWrite5m": 1.00,
+        "cacheWrite1h": 1.60,
+        "cacheRead": 0.08
+      }
+    },
+    {
+      "id": "claude-haiku-3",
+      "displayName": "Claude Haiku 3",
+      "patterns": ["claude-haiku-3*", "claude-3-haiku*"],
+      "pricing": {
+        "input": 0.25,
+        "output": 1.25,
+        "cacheWrite5m": 0.30,
+        "cacheWrite1h": 0.50,
+        "cacheRead": 0.03
+      }
+    }
+  ]
+}

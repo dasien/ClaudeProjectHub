@@ -20,8 +20,15 @@ struct HubWindowConfigurator: NSViewRepresentable {
 }
 
 private final class WindowAccessView: NSView {
+    /// UserDefaults key under which we save the hub window's frame.
+    /// Kept distinct from any autosave name SwiftUI/AppKit might
+    /// assign internally to avoid stomping each other.
+    private static let frameDefaultsKey = "ClaudeProjectHubMainWindowFrame"
+
     private let onWindow: (NSWindow) -> Void
     private var attached = false
+    private var resizeObserver: NSObjectProtocol?
+    private var moveObserver: NSObjectProtocol?
 
     init(onWindow: @escaping (NSWindow) -> Void) {
         self.onWindow = onWindow
@@ -40,6 +47,46 @@ private final class WindowAccessView: NSView {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.isMovableByWindowBackground = false
+        // Persist the user's chosen window frame across launches.
+        // We tried `setFrameAutosaveName` first; SwiftUI's WindowGroup
+        // appears to override or compete with it. Direct UserDefaults
+        // read on appear + write on resize/move is unambiguous.
+        restoreSavedFrame(on: window)
+        installFrameSaver(for: window)
         onWindow(window)
+    }
+
+    private func restoreSavedFrame(on window: NSWindow) {
+        guard let saved = UserDefaults.standard.string(forKey: Self.frameDefaultsKey) else { return }
+        let rect = NSRectFromString(saved)
+        guard !rect.isEmpty else { return }
+        // Guard against saved frames from a previous monitor layout
+        // that no longer overlaps any visible screen.
+        let onAnyScreen = NSScreen.screens.contains { $0.frame.intersects(rect) }
+        guard onAnyScreen else { return }
+        window.setFrame(rect, display: true)
+    }
+
+    private func installFrameSaver(for window: NSWindow) {
+        let save: (Notification) -> Void = { _ in
+            UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: Self.frameDefaultsKey)
+        }
+        resizeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification,
+            object: window,
+            queue: .main,
+            using: save
+        )
+        moveObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification,
+            object: window,
+            queue: .main,
+            using: save
+        )
+    }
+
+    deinit {
+        if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
+        if let moveObserver { NotificationCenter.default.removeObserver(moveObserver) }
     }
 }

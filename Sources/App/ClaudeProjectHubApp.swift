@@ -10,6 +10,7 @@ struct ClaudeProjectHubApp: App {
     @StateObject private var dockController: DockController
     @StateObject private var externalScanner: ExternalSessionScanner
     @StateObject private var pricingRegistry: ModelPricingRegistry
+    @StateObject private var attentionService: AttentionService
 
     @AppStorage("appearance") private var appearance: String = "system"
 
@@ -21,6 +22,7 @@ struct ClaudeProjectHubApp: App {
         let dock = DockController()
         let scanner = ExternalSessionScanner(store: store, hostRegistry: registry)
         let pricing = ModelPricingRegistry()
+        let attention = AttentionService(store: store)
         _sessionStore = StateObject(wrappedValue: store)
         _windowManager = StateObject(wrappedValue: manager)
         _hostRegistry = StateObject(wrappedValue: registry)
@@ -28,6 +30,7 @@ struct ClaudeProjectHubApp: App {
         _dockController = StateObject(wrappedValue: dock)
         _externalScanner = StateObject(wrappedValue: scanner)
         _pricingRegistry = StateObject(wrappedValue: pricing)
+        _attentionService = StateObject(wrappedValue: attention)
         _launcherService = StateObject(wrappedValue: SessionLauncherService(
             store: store,
             windowManager: manager,
@@ -47,11 +50,13 @@ struct ClaudeProjectHubApp: App {
                 .environmentObject(dockController)
                 .environmentObject(externalScanner)
                 .environmentObject(pricingRegistry)
+                .environmentObject(attentionService)
                 .frame(minWidth: 900, minHeight: 600)
                 .preferredColorScheme(preferredColorScheme)
                 .onAppear {
                     lifecycleMonitor.start()
                     externalScanner.start()
+                    attentionService.requestAuthorizationIfNeeded()
                     Task { await launcherService.reattachAll() }
                 }
         }

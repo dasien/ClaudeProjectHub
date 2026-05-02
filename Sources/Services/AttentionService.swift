@@ -1,0 +1,197 @@
+import AppKit
+import Combine
+import Foundation
+import UserNotifications
+
+/// Tracks which docked sessions need the user's attention — i.e.
+/// transitioned from `.working` to `.idle` (claude is waiting for
+/// input). Drives two surfaces:
+///
+/// 1. **In-app indicator** via `needsAttention` (the sidebar's
+///    `SessionRow` reads this and pulses the status dot).
+/// 2. **Notification Center banner** posted via the
+///    `UserNotifications` framework, gated on the user's settings
+///    toggle and on the hub not being the foreground app (default
+///    macOS behavior — when hub is active the user can already see
+///    the in-app indicator).
+///
+/// Cleared when:
+/// - User selects the session in the sidebar (via `store.selectedSessionID`)
+/// - Session transitions back to `.working` (or `.closed`)
+/// - User clicks the notification banner
+@MainActor
+final class AttentionService: NSObject, ObservableObject {
+    @Published private(set) var needsAttention: Set<Session.ID> = []
+
+    private let store: SessionStore
+    private var lastStatus: [Session.ID: SessionStatus] = [:]
+    private var idleDebounceTasks: [Session.ID: Task<Void, Never>] = [:]
+    private var cancellables = Set<AnyCancellable>()
+
+    /// How long a session has to stay idle before we treat it as
+    /// "waiting for input" — a single keystroke can briefly flip
+    /// the state to idle and back, so a small debounce avoids spammy
+    /// notifications for those.
+    private let debounceSeconds: UInt64 = 2_500_000_000
+
+    /// UserDefaults key for the on/off toggle in Settings.
+    static let notificationsEnabledDefaultsKey = "notifyOnIdle"
+
+    init(store: SessionStore) {
+        self.store = store
+        super.init()
+        UNUserNotificationCenter.current().delegate = self
+
+        // React to status changes for transition detection.
+        store.$sessions
+            .sink { [weak self] sessions in
+                Task { @MainActor in self?.handleSessionsChange(sessions) }
+            }
+            .store(in: &cancellables)
+
+        // Clear attention when the user actively selects the session
+        // in the sidebar or via tab — that's the gesture that says
+        // "I see it."
+        store.$selectedSessionID
+            .sink { [weak self] selectedID in
+                guard let id = selectedID else { return }
+                Task { @MainActor in self?.clearAttention(for: id) }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Request notification permission from the user. Idempotent —
+    /// macOS only shows the prompt the first time; subsequent calls
+    /// just read the current authorization state.
+    func requestAuthorizationIfNeeded() {
+        UNUserNotificationCenter.current().requestAuthorization(
+            options: [.alert, .sound]
+        ) { _, _ in
+            // Errors here are non-fatal — the in-app indicator works
+            // regardless of notification permission.
+        }
+    }
+
+    private var notificationsEnabled: Bool {
+        // Default to enabled when the key has never been written.
+        UserDefaults.standard.object(forKey: Self.notificationsEnabledDefaultsKey) as? Bool ?? true
+    }
+
+    // MARK: - Transition handling
+
+    private func handleSessionsChange(_ sessions: [Session]) {
+        for session in sessions {
+            let previous = lastStatus[session.id]
+            let current = session.status
+            lastStatus[session.id] = current
+
+            if previous == .working, current == .idle {
+                scheduleIdleAttention(for: session)
+            } else if current != .idle {
+                // Out of idle (back to working, or closed) — cancel
+                // any pending debounce and clear active attention.
+                idleDebounceTasks[session.id]?.cancel()
+                idleDebounceTasks.removeValue(forKey: session.id)
+                if needsAttention.contains(session.id) {
+                    clearAttention(for: session.id)
+                }
+            }
+        }
+        // Clean up tracking for sessions that no longer exist.
+        let liveIDs = Set(sessions.map(\.id))
+        for id in lastStatus.keys where !liveIDs.contains(id) {
+            lastStatus.removeValue(forKey: id)
+            idleDebounceTasks[id]?.cancel()
+            idleDebounceTasks.removeValue(forKey: id)
+            if needsAttention.contains(id) {
+                clearAttention(for: id)
+            }
+        }
+    }
+
+    private func scheduleIdleAttention(for session: Session) {
+        idleDebounceTasks[session.id]?.cancel()
+        idleDebounceTasks[session.id] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: self?.debounceSeconds ?? 2_500_000_000)
+            guard let self, !Task.isCancelled else { return }
+            // Re-check status: if it's no longer idle (claude
+            // started processing again), the debounce was a false
+            // alarm.
+            guard self.store.sessions.first(where: { $0.id == session.id })?.status == .idle else {
+                return
+            }
+            self.markAttention(for: session)
+            self.idleDebounceTasks.removeValue(forKey: session.id)
+        }
+    }
+
+    private func markAttention(for session: Session) {
+        needsAttention.insert(session.id)
+        // Notifications fire regardless of whether the hub is the
+        // active app. The in-app pulse on the sidebar handles the
+        // "user is in the hub looking at the right place" case
+        // visually, but the user might be in the hub *and* looking
+        // at a different docked terminal — the banner reminds them.
+        // The user can disable banners entirely via Settings.
+        guard notificationsEnabled else { return }
+        postNotification(for: session)
+    }
+
+    private func clearAttention(for sessionID: Session.ID) {
+        guard needsAttention.contains(sessionID) else { return }
+        needsAttention.remove(sessionID)
+        UNUserNotificationCenter.current()
+            .removeDeliveredNotifications(withIdentifiers: [sessionID.uuidString])
+    }
+
+    private func postNotification(for session: Session) {
+        let content = UNMutableNotificationContent()
+        content.title = session.displayTitle
+        content.body = "Claude is waiting for input · \(session.cwd.lastPathComponent)"
+        content.sound = .default
+        content.userInfo = ["sessionID": session.id.uuidString]
+        let request = UNNotificationRequest(
+            identifier: session.id.uuidString,
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+}
+
+extension AttentionService: UNUserNotificationCenterDelegate {
+    /// Foreground presentation — without this, macOS swallows
+    /// notifications when the hub is the active app. We explicitly
+    /// opt the banner, sound, and Notification Center entry in.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound, .list])
+    }
+
+    /// Notification tapped from Notification Center. Activate the
+    /// hub and select the originating session — the existing
+    /// .onChange in MainView routes this to DockController which
+    /// raises the docked window.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        if let idString = userInfo["sessionID"] as? String,
+           let id = UUID(uuidString: idString) {
+            Task { @MainActor in self.handleNotificationClick(sessionID: id) }
+        }
+        completionHandler()
+    }
+
+    @MainActor
+    private func handleNotificationClick(sessionID: Session.ID) {
+        NSApp.activate()
+        store.selectedSessionID = sessionID
+        clearAttention(for: sessionID)
+    }
+}

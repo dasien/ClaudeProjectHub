@@ -3,6 +3,7 @@ import SwiftUI
 struct SessionRow: View {
     let session: Session
     @EnvironmentObject private var hostRegistry: HostRegistry
+    @EnvironmentObject private var attention: AttentionService
 
     var body: some View {
         HStack(spacing: 10) {
@@ -47,19 +48,50 @@ struct SessionRow: View {
         // working: solid green (claude is processing)
         // idle: hollow green (alive, waiting for input)
         // closed: solid grey
-        switch session.status {
-        case .working:
-            Circle()
-                .fill(Color.green)
-                .frame(width: 8, height: 8)
-        case .idle:
-            Circle()
-                .strokeBorder(Color.green, lineWidth: 1.5)
-                .frame(width: 8, height: 8)
-        case .closed:
-            Circle()
-                .fill(Color.secondary)
-                .frame(width: 8, height: 8)
+        // *** needs attention overrides idle ***: a pulsing light
+        // purple dot signals "claude transitioned working → idle and
+        // hasn't been viewed since" — surfaces sessions that may be
+        // waiting on user input.
+        if attention.needsAttention.contains(session.id) {
+            PulsingAttentionDot()
+        } else {
+            switch session.status {
+            case .working:
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 8, height: 8)
+            case .idle:
+                Circle()
+                    .strokeBorder(Color.green, lineWidth: 1.5)
+                    .frame(width: 8, height: 8)
+            case .closed:
+                Circle()
+                    .fill(Color.secondary)
+                    .frame(width: 8, height: 8)
+            }
         }
+    }
+}
+
+/// Pulsing dot in macOS badge color — visual cue that this session
+/// needs attention. Color matches the standard system app-badge red
+/// so the indicator reads as "this thing is waiting for you" the
+/// same way unread Mail/Slack badges do. Pulse is subtle (slight
+/// scale + opacity over ~1.1s) so it draws the eye without becoming
+/// distracting in a list of many sessions.
+private struct PulsingAttentionDot: View {
+    @State private var pulse: Bool = false
+
+    var body: some View {
+        Circle()
+            .fill(Color(nsColor: .systemRed))
+            .frame(width: 8, height: 8)
+            .scaleEffect(pulse ? 1.35 : 1.0)
+            .opacity(pulse ? 0.55 : 1.0)
+            .animation(
+                .easeInOut(duration: 1.1).repeatForever(autoreverses: true),
+                value: pulse
+            )
+            .onAppear { pulse = true }
     }
 }

@@ -141,10 +141,11 @@ struct ScriptedHostLauncher: SessionLauncher {
 
     // MARK: - Substitution
 
-    /// Replaces `{cwd}`, `{claude}`, `{marker}`, `{mode}`, and
-    /// `{targetWindowID}` in the template. Substituted strings are
-    /// AppleScript-escaped (backslash, double-quote) so users can drop
-    /// them straight into string literals like `"{cwd}"`.
+    /// Replaces `{cwd}`, `{claude}`, `{marker}`, `{mode}`,
+    /// `{targetWindowID}`, and `{bundleID}` in the template.
+    /// Substituted strings are AppleScript-escaped (backslash,
+    /// double-quote) so users can drop them straight into string
+    /// literals like `"{cwd}"`.
     private func substitute(
         template: String,
         cwd: URL,
@@ -159,6 +160,7 @@ struct ScriptedHostLauncher: SessionLauncher {
         case .newTab:    modeString = "newTab"
         }
         let targetIDString = targetWindowID.map { String($0) } ?? "0"
+        let bundleID = config.bundleIdentifier ?? ""
 
         return template
             .replacingOccurrences(of: "{cwd}",            with: appleScriptEscape(cwd.path))
@@ -166,6 +168,7 @@ struct ScriptedHostLauncher: SessionLauncher {
             .replacingOccurrences(of: "{marker}",         with: appleScriptEscape(marker))
             .replacingOccurrences(of: "{mode}",           with: modeString)
             .replacingOccurrences(of: "{targetWindowID}", with: targetIDString)
+            .replacingOccurrences(of: "{bundleID}",       with: appleScriptEscape(bundleID))
     }
 
     private func appleScriptEscape(_ s: String) -> String {

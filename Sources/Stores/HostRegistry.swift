@@ -25,6 +25,7 @@ final class HostRegistry: ObservableObject {
         self.url = url
         self.scriptsDirectory = scriptsDirectory
         copyBundledScriptsIfMissing()
+        applyDefaultsIfNeeded()
         load()
     }
 
@@ -111,6 +112,27 @@ final class HostRegistry: ObservableObject {
         try? data.write(to: url, options: .atomic)
     }
 
+    /// Bring `hosts.json` up to the current `builtinDefaults` when
+    /// the user's saved version is older. Backs up the existing file
+    /// to `hosts.json.backup` first so the user can recover any
+    /// custom hosts they had before the update wiped the file. Then
+    /// removes `hosts.json` so `load()` will rewrite it from the new
+    /// defaults.
+    private func applyDefaultsIfNeeded() {
+        let defaults = UserDefaults.standard
+        let lastSeen = defaults.integer(forKey: HostRegistry.lastSeenDefaultsVersionKey)
+        guard lastSeen < HostRegistry.currentDefaultsVersion else { return }
+
+        if FileManager.default.fileExists(atPath: url.path) {
+            let backupURL = url.appendingPathExtension("backup")
+            try? FileManager.default.removeItem(at: backupURL)
+            try? FileManager.default.copyItem(at: url, to: backupURL)
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        defaults.set(HostRegistry.currentDefaultsVersion, forKey: HostRegistry.lastSeenDefaultsVersionKey)
+    }
+
     // MARK: - Bundled scripts
 
     /// Copies any `.applescript` files from the bundle's `Scripts/` folder
@@ -159,6 +181,23 @@ final class HostRegistry: ObservableObject {
 
     // MARK: - Defaults
 
+    /// Bumped whenever `builtinDefaults` changes. On startup, if the
+    /// user's saved default-version (in UserDefaults) is older than
+    /// this, `applyDefaultsIfNeeded` backs up their existing
+    /// `hosts.json` to `hosts.json.backup` and rewrites the file from
+    /// `builtinDefaults`. The user can recover any custom hosts they
+    /// had by reading the backup.
+    private static let currentDefaultsVersion = 2
+    private static let lastSeenDefaultsVersionKey = "HostRegistryDefaultsVersion"
+
+    /// Hosts shipped pre-configured. The user can add/remove/edit
+    /// hosts in Settings, but launching with no `hosts.json` (or a
+    /// post-update reset) repopulates from this list. PyCharm
+    /// bundle id was confirmed against an actual install; the rest
+    /// follow JetBrains' published patterns. Bundle id casing
+    /// doesn't affect runtime lookup (LaunchServices is
+    /// case-insensitive) but we follow JetBrains' convention where
+    /// known.
     private static let builtinDefaults: [HostConfig] = [
         HostConfig(
             id: "terminal-app",
@@ -171,6 +210,66 @@ final class HostRegistry: ObservableObject {
             displayName: "iTerm2",
             bundleIdentifier: "com.googlecode.iterm2",
             launchScript: "iterm2.applescript"
+        ),
+        HostConfig(
+            id: "visual-studio-code",
+            displayName: "Visual Studio Code",
+            bundleIdentifier: "com.microsoft.VSCode",
+            launchScript: "visual-studio-code.applescript"
+        ),
+        HostConfig(
+            id: "intellij-idea",
+            displayName: "IntelliJ IDEA",
+            bundleIdentifier: "com.jetbrains.intellij",
+            launchScript: "intellij-idea.applescript"
+        ),
+        HostConfig(
+            id: "pycharm",
+            displayName: "PyCharm",
+            bundleIdentifier: "com.jetbrains.pycharm",
+            launchScript: "pycharm.applescript"
+        ),
+        HostConfig(
+            id: "webstorm",
+            displayName: "WebStorm",
+            bundleIdentifier: "com.jetbrains.WebStorm",
+            launchScript: "webstorm.applescript"
+        ),
+        HostConfig(
+            id: "phpstorm",
+            displayName: "PhpStorm",
+            bundleIdentifier: "com.jetbrains.PhpStorm",
+            launchScript: "phpstorm.applescript"
+        ),
+        HostConfig(
+            id: "rubymine",
+            displayName: "RubyMine",
+            bundleIdentifier: "com.jetbrains.rubymine",
+            launchScript: "rubymine.applescript"
+        ),
+        HostConfig(
+            id: "clion",
+            displayName: "CLion",
+            bundleIdentifier: "com.jetbrains.CLion",
+            launchScript: "clion.applescript"
+        ),
+        HostConfig(
+            id: "goland",
+            displayName: "GoLand",
+            bundleIdentifier: "com.jetbrains.goland",
+            launchScript: "goland.applescript"
+        ),
+        HostConfig(
+            id: "rider",
+            displayName: "Rider",
+            bundleIdentifier: "com.jetbrains.rider",
+            launchScript: "rider.applescript"
+        ),
+        HostConfig(
+            id: "android-studio",
+            displayName: "Android Studio",
+            bundleIdentifier: "com.google.android.studio",
+            launchScript: "android-studio.applescript"
         )
     ]
 

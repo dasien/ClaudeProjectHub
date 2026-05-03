@@ -10,6 +10,8 @@
 --                    mode (0 otherwise). The hub has already AX-raised this
 --                    window in Swift before this script runs, so System
 --                    Events keystrokes from this script land on it.
+--   {bundleID}       host's bundle identifier from hosts.json — handy for
+--                    `open -b` invocations or System Events process lookup.
 --
 -- Returns: integer CGWindowID of the new tab/window for AX binding, or 0
 -- to let the hub fall back to AX diff (snapshot windows-before vs after).

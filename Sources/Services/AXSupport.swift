@@ -110,7 +110,19 @@ enum AXSupport {
         return CGRect(origin: origin, size: size)
     }
 
+    /// Brings a window to the front of its app's window stack.
+    ///
+    /// We set `AXMain` and `AXFocused` before calling `AXRaise` because
+    /// JetBrains IDEs (Rider, IntelliJ, etc.) run on JBR and their AX
+    /// support is incomplete: `AXRaise` alone makes the window flash
+    /// forward for a frame and then JBR's window manager re-asserts its
+    /// own idea of which window is main. Marking AXMain first tells JBR
+    /// which window we want as primary, so it sticks. Native AppKit apps
+    /// either already have these attributes set correctly or accept the
+    /// write as a no-op.
     static func raise(_ element: AXUIElement) {
+        AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         AXUIElementPerformAction(element, kAXRaiseAction as CFString)
     }
 

@@ -19,6 +19,22 @@ struct NewSessionDialog: View {
         hostRegistry.host(forID: hostID)
     }
 
+    /// Only hosts whose app is actually installed on this machine.
+    /// We pre-ship many JetBrains IDE hosts in the defaults; without
+    /// this filter the picker would list all of them even for users
+    /// who only have one or two installed. Hosts without a bundle id
+    /// (rare) are always shown.
+    private var installedHosts: [HostConfig] {
+        hostRegistry.hosts.filter { host in
+            guard let bundleID = host.bundleIdentifier, !bundleID.isEmpty else {
+                return true
+            }
+            return NSWorkspace.shared.urlForApplication(
+                withBundleIdentifier: bundleID
+            ) != nil
+        }
+    }
+
     /// Only sessions running in the currently-selected host. A new tab can
     /// only nest in a window that belongs to the same app — picking a
     /// Terminal target while launching iTerm2 wouldn't work.
@@ -68,7 +84,7 @@ struct NewSessionDialog: View {
 
             field(label: "Host") {
                 Picker("", selection: $hostID) {
-                    ForEach(hostRegistry.hosts) { host in
+                    ForEach(installedHosts) { host in
                         Text(host.displayName).tag(host.id)
                     }
                 }
@@ -144,11 +160,14 @@ struct NewSessionDialog: View {
         .frame(width: 480)
         .onAppear {
             nameFocused = true
-            // Default to the first host in the registry if our seed value
-            // isn't there (e.g. user removed terminal-app from hosts.json).
-            if hostRegistry.host(forID: hostID) == nil,
-               let first = hostRegistry.hosts.first {
-                hostID = first.id
+            // Default to the first installed host if our seed value
+            // isn't installed on this machine, or isn't in the
+            // registry at all (e.g. user removed terminal-app from
+            // hosts.json).
+            if !installedHosts.contains(where: { $0.id == hostID }) {
+                if let first = installedHosts.first {
+                    hostID = first.id
+                }
             }
         }
     }

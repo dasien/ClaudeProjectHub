@@ -1,0 +1,25 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <g id="background">
+    <rect width="512" height="512" rx="115" ry="115" fill="#F5F0E8"/>
+  </g>
+  <g id="window-back" transform="rotate(-7 256 280)">
+    <rect x="96" y="128" width="320" height="240" rx="22" ry="22" fill="#E8B8A0"/>
+    <rect x="96" y="128" width="320" height="52" rx="22" ry="22" fill="#B8593F"/>
+    <rect x="96" y="158" width="320" height="22" fill="#B8593F"/>
+    <g id="dots-back" fill="#2D1B14">
+      <circle cx="128" cy="154" r="11"/>
+      <circle cx="162" cy="154" r="11"/>
+      <circle cx="196" cy="154" r="11"/>
+    </g>
+  </g>
+  <g id="window-front" transform="rotate(6 256 296)">
+    <rect x="96" y="160" width="320" height="240" rx="22" ry="22" fill="#D97757"/>
+    <rect x="96" y="160" width="320" height="52" rx="22" ry="22" fill="#2D1B14"/>
+    <rect x="96" y="190" width="320" height="22" fill="#2D1B14"/>
+    <g id="dots-front" fill="#F5F0E8">
+      <circle cx="128" cy="186" r="11"/>
+      <circle cx="162" cy="186" r="11"/>
+      <circle cx="196" cy="186" r="11"/>
+    </g>
+  </g>
+</svg>

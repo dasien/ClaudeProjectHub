@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <g id="background">
+    <rect width="512" height="512" rx="115" ry="115" fill="#F5F0E8"/>
+  </g>
+  <g id="connections" fill="#D97757">
+    <rect x="252" y="92" width="8" height="0" rx="4"/>
+    <path d="M252 256 L252 108 Q252 100 256 100 Q260 100 260 108 L260 256 Z"/>
+    <path d="M256 256 L376 136 Q382 130 386 134 Q390 138 384 144 L264 264 Z"/>
+    <path d="M256 256 L412 256 Q420 256 420 260 Q420 264 412 264 L256 264 Z"/>
+    <path d="M256 256 L376 376 Q382 382 378 386 Q374 390 368 384 L248 264 Z"/>
+    <path d="M256 256 L256 412 Q256 420 252 420 Q248 420 248 412 L248 256 Z"/>
+    <path d="M256 256 L136 376 Q130 382 126 378 Q122 374 128 368 L248 248 Z"/>
+    <path d="M256 256 L100 256 Q92 256 92 252 Q92 248 100 248 L256 248 Z"/>
+  </g>
+  <g id="nodes">
+    <circle cx="256" cy="92" r="22" fill="#2D1B14"/>
+    <circle cx="380" cy="132" r="22" fill="#2D1B14"/>
+    <circle cx="420" cy="256" r="22" fill="#2D1B14"/>
+    <circle cx="380" cy="380" r="22" fill="#2D1B14"/>
+    <circle cx="256" cy="420" r="22" fill="#2D1B14"/>
+    <circle cx="132" cy="380" r="22" fill="#2D1B14"/>
+    <circle cx="92" cy="256" r="22" fill="#2D1B14"/>
+  </g>
+  <g id="hub">
+    <circle cx="256" cy="256" r="78" fill="#B8593F"/>
+    <circle cx="256" cy="256" r="58" fill="#D97757"/>
+  </g>
+</svg>

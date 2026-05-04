@@ -1,0 +1,16 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <g id="background">
+    <rect width="512" height="512" rx="115" ry="115" fill="#F5F0E8"/>
+  </g>
+  <g id="arcs" transform="translate(256 256)">
+    <g id="arc-1" transform="rotate(0)">
+      <path d="M -110,-58 A 124,124 0 1 1 -110,58 L -52,28 A 60,60 0 1 0 -52,-28 Z" fill="#D97757"/>
+    </g>
+    <g id="arc-2" transform="rotate(120)">
+      <path d="M -110,-58 A 124,124 0 1 1 -110,58 L -52,28 A 60,60 0 1 0 -52,-28 Z" fill="#2D1B14"/>
+    </g>
+    <g id="arc-3" transform="rotate(240)">
+      <path d="M -110,-58 A 124,124 0 1 1 -110,58 L -52,28 A 60,60 0 1 0 -52,-28 Z" fill="#B8593F"/>
+    </g>
+  </g>
+</svg>

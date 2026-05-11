@@ -70,7 +70,12 @@ final class DockController: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.raiseActiveWithoutFocus()
+                // syncTab: false because the user may have switched
+                // iTerm2/Terminal tabs themselves while the hub was
+                // backgrounded. Forcing the host's tab back to the
+                // hub's activeSessionID would undo that manual switch
+                // every time they cmd-tab back to the hub.
+                self?.raiseActiveWithoutFocus(syncTab: false)
             }
         }
     }
@@ -272,11 +277,18 @@ final class DockController: ObservableObject {
     /// a hub drag/resize settles — we want the docked window back on
     /// top of the dock area, but stealing focus from the hub mid-
     /// interaction would be jarring.
-    private func raiseActiveWithoutFocus() {
+    ///
+    /// `syncTab` controls whether to also tell the host (iTerm2,
+    /// Terminal) to switch its internal tab to match `activeSessionID`.
+    /// True for paths where the active session genuinely changed
+    /// (settle, undock); false for paths where we just want to bring
+    /// the same window back on top without disturbing the user's own
+    /// tab choice (focus return after cmd-tab away).
+    private func raiseActiveWithoutFocus(syncTab: Bool = true) {
         guard let id = activeSessionID,
               let element = bindings[id] else { return }
         AXSupport.raise(element)
-        selectActiveTab()
+        if syncTab { selectActiveTab() }
     }
 
     /// Asks the host to switch its internal tab to match the active

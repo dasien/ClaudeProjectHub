@@ -184,6 +184,7 @@ struct NewSessionDialog: View {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.title = "Choose a directory for the new Claude session"
         panel.prompt = "Select"

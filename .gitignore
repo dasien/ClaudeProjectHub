@@ -21,3 +21,6 @@ Package.resolved
 # IDE
 .vscode/
 .idea/
+
+# Per-developer signing config (template is signing.xcconfig.example)
+signing.xcconfig

@@ -12,7 +12,8 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_IDENTITY: "Apple Development"
     CODE_SIGN_STYLE: Automatic
-    DEVELOPMENT_TEAM: "G5GR8NMG5U"
+    # DEVELOPMENT_TEAM comes from signing.xcconfig (per-developer,
+    # gitignored). See signing.xcconfig.example for setup instructions.
     # Xcode 16 "recommended settings" that xcodegen doesn't include by
     # default. Setting them here keeps the "Update to recommended settings"
     # prompt from reappearing on every regen.
@@ -23,12 +24,27 @@ targets:
   ClaudeProjectHub:
     type: application
     platform: macOS
+    configFiles:
+      Debug: signing.xcconfig
+      Release: signing.xcconfig
     sources:
       - path: Sources
       - path: Resources/Scripts
         type: folder
       - path: Resources/models.json
       - path: Resources/Assets.xcassets
+      - path: README.md
+        buildPhase: none
+        group: Docs
+      - path: CLAUDE.md
+        buildPhase: none
+        group: Docs
+      - path: USER_GUIDE.md
+        buildPhase: none
+        group: Docs
+      - path: INTEGRATIONS_GUIDE.md
+        buildPhase: none
+        group: Docs
     info:
       path: Resources/Info.plist
       properties:
@@ -55,5 +71,13 @@ schemes:
       config: Debug
     test:
       config: Debug
+    archive:
+      config: Release
+  ClaudeProjectHub (Release):
+    build:
+      targets:
+        ClaudeProjectHub: all
+    run:
+      config: Release
     archive:
       config: Release

@@ -1,18 +1,37 @@
 # Claude Project Hub
 
-A native macOS app that gives you one place to manage Claude Code sessions across whichever terminal or IDE launches them. Discover, focus, close, and resume sessions in Terminal.app, iTerm2, and (eventually) VSCode, Rider, Ghostty, and friends — without reinventing the terminal.
+<p align="center">
+  <img src="logos/export/iteration-8-1024x512.png" alt="Claude Project Hub" width="520">
+</p>
+
+A native macOS app that gives you one place to manage Claude Code sessions across whichever terminal or IDE launches them. Discover, focus, close, and resume sessions — without reinventing the terminal.
 
 ## Why
 
-Claude Code stores every CLI-launched session as JSONL under `~/.claude/projects/<encoded-cwd>/`, and writes per-process metadata to `~/.claude/sessions/<pid>.json`. Both are the same regardless of which terminal or IDE invoked `claude`. The hub uses those as a unifying primitive: every running `claude` session, whatever app launched it, is a row in one sidebar.
+Claude sessions can be from a variety of hosts.  Tracking these sessions and identifying when the Claude is waiting for the user to provide input, is a growing issue.  The project hub solves this by allowing the user to create new sessions or 'adopt' existing ones into a single place.
 
-## Status
+## Features
 
-v1 core is working: launch, focus, close, resume, status detection (idle/working/closed), JSON-driven host registry. See [`CLAUDE.md`](CLAUDE.md) for milestone breakdown.
+- **Unified session list** across every supported terminal and IDE
+- **Launch / Focus / Close / Resume** sessions from one place; status detection (idle / working / closed) reads from `~/.claude/sessions/<pid>.json` directly
+- **Tab docking** — pin foreign host windows into the hub's tab area so multiple sessions live in one window with native-feeling tabs
+- **Idle session notifications** when a session transitions from working → idle and the hub isn't already focused the user receives a system notification that Claude is waiting
+- **Reattach on restart** — sessions whose underlying `claude` PID is still alive are re-bound and re-docked when the hub launches
+- **External session adoption** — any `claude` running on the machine, including ones launched outside the hub, appears in the sidebar and can be docked
+- **Per-session cost + token breakdown** via right-click → Get Info; pricing comes from a user-editable `models.json`
 
-Currently supported hosts: **Terminal.app**, **iTerm2**.
+## Supported hosts
 
-## Requirements
+Pre-configured. The New Session picker filters to whichever of these you actually have installed:
+
+- **Terminal.app**
+- **iTerm2**
+- **Visual Studio Code**
+- **JetBrains IDEs**: IntelliJ IDEA, PyCharm, WebStorm, PhpStorm, RubyMine, CLion, GoLand, Rider, Android Studio
+
+Adding a host the hub doesn't ship with (Ghostty, WezTerm, kitty, …) is a no-code change — see [Adding a host](#adding-a-host) below.
+
+## Development Requirements
 
 - macOS 14+ (developed against macOS 26)
 - Xcode 16+
@@ -23,12 +42,16 @@ Currently supported hosts: **Terminal.app**, **iTerm2**.
 ```bash
 git clone git@github.com:dasien/ClaudeProjectHub.git
 cd ClaudeProjectHub
-brew install xcodegen        # one-time
-xcodegen                     # regenerate .xcodeproj from project.yml
+brew install xcodegen                          # one-time
+cp signing.xcconfig.example signing.xcconfig   # one-time per checkout
+$EDITOR signing.xcconfig                       # fill in your DEVELOPMENT_TEAM
+xcodegen                                       # regenerate .xcodeproj from project.yml
 open ClaudeProjectHub.xcodeproj
 ```
 
-Then ⌘R in Xcode. The first launch will prompt for **Accessibility** access; the first time each host (Terminal, iTerm2, …) is targeted, macOS will also prompt for **Automation/Apple Events** access for that specific app. Both prompts are necessary for the hub to bind, focus, and close host windows.
+`signing.xcconfig` is per-developer and gitignored. Find your Apple Developer team ID via `security find-identity -v -p codesigning` (paid teams) or Xcode → Settings → Accounts (Personal Teams from a free Apple ID).
+
+Run the project from Xcode. The first launch prompts for **Accessibility** access; the first time each host (Terminal, iTerm2, …) is targeted, macOS will also prompt for **Automation/Apple Events** access for that specific app. Both prompts are necessary for the hub to bind, focus, and close host windows.
 
 `.xcodeproj/` is gitignored — it's regenerated from `project.yml`. Re-run `xcodegen` whenever you add or remove files in `Sources/`.
 
@@ -36,23 +59,40 @@ Then ⌘R in Xcode. The first launch will prompt for **Accessibility** access; t
 
 ```
 Sources/
-├── App/                  @main app + scene
-├── Models/               Session, HostConfig, SessionStatus, WindowMode, DockState
+├── App/                  @main app + scene + environment objects
+├── Models/               Session, HostConfig, SessionStatus, WindowMode,
+│                         DockState, ModelPricing, SessionUsage, ...
 ├── Stores/               SessionStore (persistence), HostRegistry
-├── Services/             AXSupport, SessionLauncherService, SessionLifecycleMonitor, ...
-├── Launchers/            SessionLauncher protocol + per-host implementations
-└── UI/                   SwiftUI views (sidebar, tabs, dialogs)
+├── Services/             AXSupport, AXObserver, AppleScriptRunner,
+│                         ClaudeSessionFile, ClaudeSessionTranscript,
+│                         ModelPricingRegistry, SessionLauncherService,
+│                         SessionLifecycleMonitor, WindowManager,
+│                         DockController, AttentionService, ...
+├── Launchers/            ScriptedHostLauncher (single launcher; every
+│                         host's behavior lives in its .applescript)
+└── UI/                   SwiftUI views (sidebar, tabs, dialogs, settings,
+│                         per-session info window, host editor, ...)
 Resources/
 ├── Info.plist            (generated by xcodegen)
-└── ClaudeProjectHub.entitlements
+├── ClaudeProjectHub.entitlements
+├── models.json           Claude pricing data (per-1M-token rates)
+├── Scripts/              Bundled .applescript launch scripts (one per host)
+└── Assets.xcassets/      App icon
+logos/                    Brand assets — SVG sources, exported PNGs, export script
 project.yml               xcodegen config (source of truth for the .xcodeproj)
 ```
 
 ## Adding a host
 
-Built-in hosts are registered as `BuiltinKind` cases in `Sources/Models/HostConfig.swift` and have a corresponding `SessionLauncher` implementation. CLI-spawnable hosts can be added without code by editing `~/Library/Application Support/ClaudeProjectHub/hosts.json` once the `process`-strategy launcher lands (M7).
+Each host is driven by an AppleScript file. The hub substitutes a known set of placeholders (`{cwd}`, `{claude}`, `{bundleID}`, `{marker}`, `{mode}`, `{targetWindowID}`) into the script before running it.
 
-The full integration guide is forthcoming as part of M9 — for now [`CLAUDE.md`](CLAUDE.md) is the source of truth on how the launcher protocol, AX discovery, and the host registry fit together.
+The fast path:
+
+1. Open **Settings → Hosts** (⌘,) → **+** to add a host
+2. Pick the app, enter a display name. The hub auto-slugs an id and copies `_template.applescript` into `~/Library/Application Support/ClaudeProjectHub/scripts/<your-id>.applescript`
+3. Edit the script to fit how your host accepts a command. The bundled scripts in `Resources/Scripts/` cover the common patterns: CLI-spawnable terminals, IDEs driven by a keyboard shortcut, IDEs driven by a menu walk
+
+The full integration walkthrough — placeholder contract, AX-diff fallback for window discovery, the lessons baked into the existing scripts — will live in [`INTEGRATIONS_GUIDE.md`](INTEGRATIONS_GUIDE.md) (forthcoming).
 
 ## Contributing
 

@@ -10,6 +10,12 @@ struct TabbedHostArea: View {
         store.sessions.filter { $0.status.isRunning }
     }
 
+    /// Inset between the dock area and the hub window's right/bottom
+    /// edges. Without this, a docked foreign window covers the hub
+    /// window's resize edges and the user can't drag them to resize.
+    /// Matches the sidebar's natural inset visually.
+    private static let dockInset: CGFloat = 8
+
     var body: some View {
         VStack(spacing: 0) {
             tabBar
@@ -35,6 +41,8 @@ struct TabbedHostArea: View {
                         .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
                         .allowsHitTesting(false)
                 )
+                .padding(.trailing, Self.dockInset)
+                .padding(.bottom, Self.dockInset)
         }
     }
 

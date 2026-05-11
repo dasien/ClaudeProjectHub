@@ -105,6 +105,32 @@ For newTab mode, Swift AX-raises the user's target window before running the scr
 
 ---
 
+## Docking architecture
+
+The hub doesn't reparent foreign windows — that requires SkyLight private APIs we deliberately avoid. Each docked host window stays a top-level OS window owned by its own app; the hub uses AX to pin its frame to a "dock area" rectangle inside the hub. When the hub moves or resizes, AX `kAXMovedNotification` / `kAXResizedNotification` on our own NSWindow triggers a `setFrame` for each docked foreign window. Same model every macOS window manager uses (Magnet, Rectangle, Yabai, AeroSpace).
+
+What this gets us:
+- Public AX API; stable across macOS versions
+- Foreign apps keep their own focus, keyboard handling, scroll, etc.
+- Undocking is just "stop tracking and let it free-float"
+- No risk of orphaned/mis-rendered windows from reparenting
+
+What it doesn't get us:
+- Foreign window pixels can't be composited inside our SwiftUI view hierarchy. The dock area is a placeholder; the actual pixels overlay it from a different window.
+- The hub's UI can't render above a docked window without window-level tricks (private/messy).
+
+Key files:
+- `Services/DockController.swift` — owns the set of docked session ids; reacts to hub move/resize and writes new frames to all docked windows
+- `Services/AXObserver.swift` — wraps the C-level AXObserver API; subscribes to `kAXMoved`, `kAXResized`, `kAXUIElementDestroyed`, `kAXTitleChanged`
+- `Services/AXWriteTracker.swift` — when we `setFrame` or `raise`, we record the (window, attribute, timestamp) tuple. AX events that match a recent write are flagged as not user-initiated, preventing cascade loops between our own writes and the resulting notifications
+- `Services/HubMouseGate.swift` — toggles `NSWindow.ignoresMouseEvents` based on cursor position vs the dock rect, so clicks over the dock area pass through to the foreign window underneath. Uses 30Hz polling rather than NSEvent monitors (see Lessons learned re: cmd-tab teleport leaving the gate stale)
+
+Undock-on-titlebar-drag threshold is 30px from the dock rect (Magnet-style). When the user drags a foreign window's title bar more than that distance, the AX position-changed event arrives with our `AXWriteTracker` flag absent (i.e. user-initiated) and `DockController` releases tracking.
+
+Tab switching for hosts that share one window across sessions (iTerm2 tabs, Terminal tabs) uses `Services/HostTabSelector.swift` to issue a host-specific AppleScript switch-to-tab call when the active session changes. iTerm2 returns the same `CGWindowID` for every tab in a window; the controlling tty distinguishes which session "is" which tab.
+
+---
+
 ## Lessons learned (the hard ones)
 
 These took real debugging to find. Trust them.
@@ -137,7 +163,9 @@ Fix lives in `Resources/ClaudeProjectHub.entitlements`. `project.yml` references
 
 ### Personal Team signing is sticky; ad-hoc isn't
 
-With `CODE_SIGN_IDENTITY: "-"` (ad-hoc), every build re-signs with a new signature, breaking Accessibility / Automation grants on each rebuild — TCC ties grants to signatures. Switching to a stable Personal Team (`G5GR8NMG5U`) makes grants persist across rebuilds. The team ID lives in `project.yml`. Each contributor needs to set their own team — `security find-identity -v -p codesigning` shows it for paid teams; Personal Teams (free Apple ID) don't show in `find-identity` but exist in Xcode → Settings → Accounts.
+With `CODE_SIGN_IDENTITY: "-"` (ad-hoc), every build re-signs with a new signature, breaking Accessibility / Automation grants on each rebuild — TCC ties grants to signatures. Switching to a stable Personal Team makes grants persist across rebuilds.
+
+The team ID is per-developer and lives in `signing.xcconfig` (gitignored), not `project.yml`. Each contributor copies `signing.xcconfig.example` → `signing.xcconfig` and fills in their own `DEVELOPMENT_TEAM` value. Find your team ID via `security find-identity -v -p codesigning` (paid teams) or Xcode → Settings → Accounts → your Apple ID → Manage Certificates (Personal Teams from a free Apple ID).
 
 ### `~/.claude/sessions/<pid>.json` is the canonical per-process source
 
@@ -298,7 +326,7 @@ log stream --predicate 'process == "tccd" AND (eventMessage CONTAINS "ClaudeProj
 - **M6**: JSON host registry — `HostConfig` + `HostRegistry` + strategy-based dispatch
 - **M7 — script-driven hosts** (2026-04-28): collapsed `TerminalAppLauncher` / `ITerm2Launcher` / `ProcessLauncher` into a single `ScriptedHostLauncher`. Every host is now one `.applescript` file in `~/Library/Application Support/ClaudeProjectHub/scripts/`; defaults ship in the bundle. New hosts are added through Settings → Hosts (Display Name + Choose Application + auto-slug), and the user can drop in any host with a script — no Swift code change needed. Dropped `HostStrategy` / `BuiltinKind` from the model.
 - **M7 hosts shipped**: Terminal, iTerm2 (direct CGWindowID lookup, with iTermServer/tmux fallback via controlling-tty matching), VSCode (integrated-terminal launch via System Events keystroke).
-- **Docking phases 1-6** (2026-04-30): foreign windows pinned to the hub's dock rect via AX. Hub window is transparent at the dock area with `HubMouseGate` toggling `ignoresMouseEvents` so clicks pass through to the foreign window. Spawn-into-dock, drag-titlebar-out + 30px-threshold-snap-back undocking, right-click "Undock", external session adoption via `ExternalSessionScanner` + sidebar "Available to Dock" section, Cmd-1..9 tab keyboard shortcuts, per-tab AppleScript switching for hosts that share a window across multiple sessions (iTerm2 tabs, Terminal tabs). See [DOCKING.md](DOCKING.md) for the design and the lessons learned.
+- **Docking phases 1-6** (2026-04-30): foreign windows pinned to the hub's dock rect via AX. Hub window is transparent at the dock area with `HubMouseGate` toggling `ignoresMouseEvents` so clicks pass through to the foreign window. Spawn-into-dock, drag-titlebar-out + 30px-threshold-snap-back undocking, right-click "Undock", external session adoption via `ExternalSessionScanner` + sidebar "Available to Dock" section, Cmd-1..9 tab keyboard shortcuts, per-tab AppleScript switching for hosts that share a window across multiple sessions (iTerm2 tabs, Terminal tabs). See the "Docking architecture" section above for the design.
 - **Reattach on hub restart**: sessions whose underlying claude pid is still alive are re-bound and re-docked at startup via `SessionLauncherService.reattachAll()`. Dead pids are marked closed.
 - **M8 — Per-session Get Info window** (2026-05-01, scoped down from a global dashboard): right-click any session → "Get Info" opens a popout showing cost + per-model token usage parsed from the JSONL transcript. Pricing data lives in `Resources/models.json` (Claude 4.x family with 5m + 1h cache write rates and cache-read rates per 1M tokens, as of 2026-05); copies to `~/Library/Application Support/ClaudeProjectHub/models.json` on first run for user editability. JSONL parser is `ClaudeSessionTranscript`. Window also has "Show in Finder" buttons next to the project directory and the Claude session id; transcript-not-yet-recorded sessions get an alert matching the Resume "no conversation found" pattern.
 - **Hub window state persistence**: hub window frame saved/restored via `UserDefaults` in `HubWindowConfigurator`. SwiftUI's stock state restoration didn't apply consistently with our manual NSWindow configuration; direct save-on-resize/move + restore-on-appear is unambiguous and screen-aware (won't restore an off-screen frame from a previous monitor layout).
@@ -346,7 +374,7 @@ Considerations:
 
 Authorization: request via `UNUserNotificationCenter.current().requestAuthorization` on first launch (similar to the AX permission flow), gracefully degrade if denied.
 
-#### Docking remaining phases (per [DOCKING.md](DOCKING.md))
+#### Docking remaining phases
 
 - **Phase 8 (narrowed)** — handle the hub being minimized (pause docked-window tracking; on restore, re-snap positions) and foreign windows being minimized by the user (release tracking? hide tab? design call). Multi-monitor and AX-trust-loss moved to Deferred.
 - **Phase 9 polish** — tab icons + larger chips shipped. Remaining: animation on dock/undock, tab thumbnails (would use ScreenCaptureKit), drag-to-reorder tabs.
@@ -354,7 +382,7 @@ Authorization: request via `UNUserNotificationCenter.current().requestAuthorizat
 ### Deferred (no milestone, available anytime)
 
 - **Smart bundled-script updates** — `HostRegistry.copyBundledScriptsIfMissing` only copies a bundled `.applescript` when the user's copy doesn't exist. So when we ship a fix to a default script (e.g. iterm2.applescript), existing installs keep their old copy and the user has to `rm` it manually to pick up the change. Fix: ship a hash sidecar (`.shipped.json` in the scripts dir) recording the SHA of each script as last shipped. On launch, hash the user's file — if it still matches the recorded SHA, they haven't edited it, so safely overwrite with the new bundle and update the sidecar. If it differs, leave alone. Distinguishes "user edited" from "we re-shipped" without timestamps.
-- **Drag-foreign-window-into-hub** — proximity-based dock via AX move observers on candidate windows + a SwiftUI drop-zone overlay. Discussed in DOCKING.md's "Future enhancements" section.
+- **Drag-foreign-window-into-hub** — proximity-based dock: AX move observers on candidate foreign windows (the apps hosting active claude sessions per `ClaudeSessionFile` enumeration) + a SwiftUI drop-zone overlay in the hub's dock area. macOS doesn't expose drag start/end events for foreign windows, so drag-end has to be inferred from a short AX-move-quiet timeout (~200ms) — needs empirical tuning to avoid false drops when the user pauses mid-drag. Complementary to "adopt and dock"; the latter is the deterministic fallback when the gesture isn't discoverable.
 - **Multi-monitor edge cases** — pin docked windows to the hub's screen, follow the hub if the user drags it to a different display, behave correctly across mixed-DPI setups. Today's code mostly works (NSWindow.convertToScreen handles screen coords), but hasn't been tested rigorously across configurations.
 - **AX-trust-loss handling** — if the user revokes Accessibility permission mid-session, gracefully release docked windows and surface an error rather than silently malfunctioning.
 - **Eliminate the two "Publishing changes from within view updates" warnings** — currently fire on every successful sidebar/tab click. Don't appear to cause observable bugs (the noisy bug was the simultaneousGesture cascade we already removed), but ideally fix by routing the active-tab sync through a Combine subscription on `store.$selectedSessionID` in `DockController.init` instead of `.onChange` in MainView.

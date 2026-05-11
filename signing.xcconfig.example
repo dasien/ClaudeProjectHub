@@ -1,0 +1,16 @@
+// Per-developer signing configuration.
+//
+// Setup: copy this file to `signing.xcconfig` (gitignored) and fill
+// in your Apple Developer team ID below. Then run `xcodegen` and
+// build.
+//
+// Finding your team ID:
+//   - Paid teams: run `security find-identity -v -p codesigning`;
+//     the team ID is the 10-character string in parentheses after
+//     the certificate name.
+//   - Personal Teams (free Apple ID): not shown in find-identity
+//     but visible in Xcode → Settings → Accounts → your Apple ID →
+//     Manage Certificates. The team ID is shown next to your name
+//     in the team selector.
+
+DEVELOPMENT_TEAM = YOUR_TEAM_ID

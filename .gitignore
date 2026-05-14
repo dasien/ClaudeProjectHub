@@ -24,3 +24,6 @@ Package.resolved
 
 # Per-developer signing config (template is signing.xcconfig.example)
 signing.xcconfig
+
+# Claude Code per-user settings (settings.json would be shared if you add one)
+.claude/settings.local.json

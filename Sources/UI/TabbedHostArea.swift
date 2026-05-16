@@ -102,18 +102,24 @@ struct TabbedHostArea: View {
         // Always fills the available space — the dockAreaFrame reader
         // measures this view's frame, so it must be the full size of
         // the right pane regardless of placeholder visibility.
+        //
+        // Two empty states the placeholder covers:
+        //   - No docked sessions at all → guide the user toward
+        //     launching one.
+        //   - Docked sessions exist but all are minimized/hidden →
+        //     tell them how to bring one back.
+        // Both render an opaque pane so the area reads as a normal
+        // hub region instead of a transparent void. When at least one
+        // session is visibly docked, the pane is clear and the
+        // foreign window shows through.
         ZStack {
-            // When nothing is docked, draw an opaque pane so the area
-            // reads as a normal hub region instead of a confusing
-            // transparent void. When something is docked, leave it
-            // clear so the foreign window shows through.
-            if dockController.dockedSessionIDs.isEmpty {
+            if dockController.visibleDockedSessionIDs.isEmpty {
                 Color(nsColor: .windowBackgroundColor)
                 VStack(spacing: 8) {
-                    Image(systemName: "macwindow.on.rectangle")
+                    Image(systemName: placeholderIcon)
                         .font(.largeTitle)
                         .foregroundStyle(.tertiary)
-                    Text("New sessions launched here will dock automatically")
+                    Text(placeholderText)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -126,11 +132,23 @@ struct TabbedHostArea: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // When something is docked, clicks must pass through the SwiftUI
-        // layer to the foreign window underneath. When nothing is
-        // docked, normal SwiftUI hit testing absorbs (so clicks don't
-        // leak through the hub to the desktop).
-        .allowsHitTesting(dockController.dockedSessionIDs.isEmpty)
+        // When a visible foreign window exists, clicks must pass
+        // through the SwiftUI layer to it. With no visible docked
+        // window (no docks at all, or all hidden), normal SwiftUI hit
+        // testing absorbs so clicks don't leak through to the desktop.
+        .allowsHitTesting(dockController.visibleDockedSessionIDs.isEmpty)
+    }
+
+    private var placeholderIcon: String {
+        dockController.dockedSessionIDs.isEmpty
+            ? "macwindow.on.rectangle"
+            : "eye.slash"
+    }
+
+    private var placeholderText: String {
+        dockController.dockedSessionIDs.isEmpty
+            ? "New sessions launched here will dock automatically"
+            : "All docked sessions are hidden. Click a tab to bring one back."
     }
 }
 

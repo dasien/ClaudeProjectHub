@@ -72,6 +72,16 @@ final class DockController: ObservableObject {
     /// Published so the sidebar and tab bar can mute their rows for
     /// minimized sessions.
     @Published private(set) var minimizedSessionIDs: Set<Session.ID> = []
+
+    /// Docked sessions whose foreign window is currently visible —
+    /// i.e. neither minimized (Cmd-M) nor app-hidden (Cmd-H). Used by
+    /// the TabbedHostArea placeholder logic (a transparent dock area
+    /// with all sessions hidden looks broken) and by updateMouseGate
+    /// (click-through should only be on when there's a real foreign
+    /// window underneath).
+    var visibleDockedSessionIDs: [Session.ID] {
+        dockedSessionIDs.filter { !minimizedSessionIDs.contains($0) }
+    }
     /// The store is read+written for active-session promotion: when
     /// the user minimizes the active docked window, we promote a
     /// sibling and need to propagate that to the SwiftUI selection so
@@ -167,7 +177,11 @@ final class DockController: ObservableObject {
     }
 
     private func updateMouseGate() {
-        mouseGate.setRect(dockRect, enabled: !dockedSessionIDs.isEmpty)
+        // Click-through is only safe when a real foreign window sits
+        // under the dock area. With all docked sessions minimized,
+        // the placeholder must absorb clicks instead — otherwise they
+        // leak through to the desktop.
+        mouseGate.setRect(dockRect, enabled: !visibleDockedSessionIDs.isEmpty)
     }
 
     /// Adds a session's host window to the dock. Subscribes AX events
@@ -298,6 +312,7 @@ final class DockController: ObservableObject {
         // NSWorkspace unhide event will arrive a beat later and find
         // the set already clean — both removers are idempotent.
         minimizedSessionIDs.remove(sessionID)
+        updateMouseGate()
         guard let element = bindings[sessionID] else { return }
         AXSupport.setMinimized(false, on: element)
         if let pid = AXSupport.pid(of: element),
@@ -472,11 +487,13 @@ final class DockController: ObservableObject {
         if activeSessionID == sessionID {
             promoteActiveAwayFromMinimized()
         }
+        updateMouseGate()
     }
 
     private func handleDeminiaturizedEvent(_ event: AXObserver.Event) {
         guard let sessionID = sessionID(for: event.element) else { return }
         minimizedSessionIDs.remove(sessionID)
+        updateMouseGate()
     }
 
     /// Cmd-H hid the foreign app — mark every docked session that
@@ -496,6 +513,7 @@ final class DockController: ObservableObject {
         if activeWasHidden {
             promoteActiveAwayFromMinimized()
         }
+        updateMouseGate()
     }
 
     private func handleAppUnhidden(pid: pid_t) {
@@ -504,6 +522,7 @@ final class DockController: ObservableObject {
                   AXSupport.pid(of: element) == pid else { continue }
             minimizedSessionIDs.remove(sessionID)
         }
+        updateMouseGate()
     }
 
     /// Pick the most-recently-docked non-minimized session and make

@@ -62,6 +62,18 @@ final class DockController: ObservableObject {
     /// AX notification we can observe per-window.
     private var appHiddenObserver: NSObjectProtocol?
     private var appUnhiddenObserver: NSObjectProtocol?
+    /// Tokens for the hub's own minimize/deminiaturize observers.
+    /// Installed in `attachHubWindow`.
+    private var hubWillMinimizeObserver: NSObjectProtocol?
+    private var hubDidDeminiaturizeObserver: NSObjectProtocol?
+    /// Sessions the hub itself minimized as part of a hub-window
+    /// minimize. Used so a hub-restore only un-minimizes the ones
+    /// the *hub* hid, not sessions the user had individually
+    /// minimized before the hub went down. Also used by the
+    /// miniaturize event handler to skip auto-promote when the
+    /// minimize is part of a hub-driven batch (everyone's going
+    /// down at once, there's nothing to promote to).
+    private var hubMinimizedSessionIDs: Set<Session.ID> = []
     /// Sessions whose docked foreign window is currently minimized
     /// (yellow button / Cmd-M) or whose foreign app is currently
     /// hidden (Cmd-H). Tracking these so the raise + snap-back paths
@@ -142,6 +154,12 @@ final class DockController: ObservableObject {
         if let observer = didBecomeActiveObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = hubWillMinimizeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = hubDidDeminiaturizeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         if let observer = appHiddenObserver {
             workspaceCenter.removeObserver(observer)
@@ -170,10 +188,60 @@ final class DockController: ObservableObject {
 
     /// Hands the hub's NSWindow to the mouse gate so it can toggle
     /// click-through. Called once on first appear by the SwiftUI
-    /// HubWindowConfigurator.
+    /// HubWindowConfigurator. Also installs the hub-minimize /
+    /// hub-restore observers so docked foreign windows follow the
+    /// hub up and down (otherwise they'd orphan as top-level
+    /// windows above the Dock when the hub minimizes).
     func attachHubWindow(_ window: NSWindow) {
         mouseGate.attach(to: window)
         updateMouseGate()
+
+        let center = NotificationCenter.default
+        hubWillMinimizeObserver = center.addObserver(
+            forName: NSWindow.willMiniaturizeNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.handleHubWillMinimize() }
+        }
+        hubDidDeminiaturizeObserver = center.addObserver(
+            forName: NSWindow.didDeminiaturizeNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.handleHubDidDeminiaturize() }
+        }
+    }
+
+    /// Hub is about to minimize — minimize every currently-visible
+    /// docked window so they don't orphan as top-level windows
+    /// above the Dock. Remember which sessions we minimized so the
+    /// matching restore un-minimizes only those (sessions the user
+    /// had individually hidden before stay hidden through the
+    /// round-trip).
+    private func handleHubWillMinimize() {
+        let toMinimize = visibleDockedSessionIDs
+        hubMinimizedSessionIDs.formUnion(toMinimize)
+        for sessionID in toMinimize {
+            guard let element = bindings[sessionID] else { continue }
+            AXSupport.setMinimized(true, on: element)
+            // AX kAXWindowMiniaturizedNotification will fire and
+            // update minimizedSessionIDs via the existing handler;
+            // that handler checks hubMinimizedSessionIDs to skip
+            // the auto-promote (everyone's going down).
+        }
+    }
+
+    /// Hub just deminiaturized — un-minimize only the sessions we
+    /// took down as part of `handleHubWillMinimize`. Leave alone
+    /// any session the user individually minimized while the hub
+    /// was down or before.
+    private func handleHubDidDeminiaturize() {
+        for sessionID in hubMinimizedSessionIDs {
+            guard let element = bindings[sessionID] else { continue }
+            AXSupport.setMinimized(false, on: element)
+        }
+        hubMinimizedSessionIDs.removeAll()
     }
 
     private func updateMouseGate() {
@@ -243,6 +311,7 @@ final class DockController: ObservableObject {
         dragSettleTasks.removeValue(forKey: sessionID)
         dockedSessionIDs.removeAll { $0 == sessionID }
         minimizedSessionIDs.remove(sessionID)
+        hubMinimizedSessionIDs.remove(sessionID)
         if activeSessionID == sessionID {
             activeSessionID = dockedSessionIDs.first
         }
@@ -484,7 +553,11 @@ final class DockController: ObservableObject {
     private func handleMiniaturizedEvent(_ event: AXObserver.Event) {
         guard let sessionID = sessionID(for: event.element) else { return }
         minimizedSessionIDs.insert(sessionID)
-        if activeSessionID == sessionID {
+        // Skip auto-promote when the minimize is part of a hub-driven
+        // batch — every visible session is going down together, no
+        // sibling to promote to.
+        if !hubMinimizedSessionIDs.contains(sessionID),
+           activeSessionID == sessionID {
             promoteActiveAwayFromMinimized()
         }
         updateMouseGate()

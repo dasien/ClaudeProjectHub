@@ -69,9 +69,17 @@ final class DockController: ObservableObject {
     /// the guard, hub-becomes-active would AX-raise the window and
     /// effectively un-hide it. Sessions stay in `dockedSessionIDs`
     /// while minimized; they're tracked, just not currently visible.
-    private var minimizedSessionIDs: Set<Session.ID> = []
+    /// Published so the sidebar and tab bar can mute their rows for
+    /// minimized sessions.
+    @Published private(set) var minimizedSessionIDs: Set<Session.ID> = []
+    /// The store is read+written for active-session promotion: when
+    /// the user minimizes the active docked window, we promote a
+    /// sibling and need to propagate that to the SwiftUI selection so
+    /// the sidebar/tabs follow. Injected at app launch.
+    private let store: SessionStore
 
-    init() {
+    init(store: SessionStore) {
+        self.store = store
         // Re-raise the active docked window when the hub regains focus
         // after the user switched away to another app. Without this the
         // docked window can end up below other apps' windows in z-order
@@ -461,6 +469,9 @@ final class DockController: ObservableObject {
     private func handleMiniaturizedEvent(_ event: AXObserver.Event) {
         guard let sessionID = sessionID(for: event.element) else { return }
         minimizedSessionIDs.insert(sessionID)
+        if activeSessionID == sessionID {
+            promoteActiveAwayFromMinimized()
+        }
     }
 
     private func handleDeminiaturizedEvent(_ event: AXObserver.Event) {
@@ -473,10 +484,17 @@ final class DockController: ObservableObject {
     /// raise its window on hub-becomes-active. The session record
     /// stays alive; we just respect the user's hide gesture.
     private func handleAppHidden(pid: pid_t) {
+        var activeWasHidden = false
         for sessionID in dockedSessionIDs {
             guard let element = bindings[sessionID],
                   AXSupport.pid(of: element) == pid else { continue }
             minimizedSessionIDs.insert(sessionID)
+            if activeSessionID == sessionID {
+                activeWasHidden = true
+            }
+        }
+        if activeWasHidden {
+            promoteActiveAwayFromMinimized()
         }
     }
 
@@ -486,6 +504,28 @@ final class DockController: ObservableObject {
                   AXSupport.pid(of: element) == pid else { continue }
             minimizedSessionIDs.remove(sessionID)
         }
+    }
+
+    /// Pick the most-recently-docked non-minimized session and make
+    /// it the active tab, so the dock area shows a real window rather
+    /// than an empty hole when the active session is hidden. If all
+    /// docked sessions are now minimized, leave activeSessionID alone
+    /// — the tab bar continues to indicate the user's last choice
+    /// (visually muted in a future step), the dock area is empty, and
+    /// re-selecting that session restores it.
+    private func promoteActiveAwayFromMinimized() {
+        let candidates = dockedSessionIDs.filter { !minimizedSessionIDs.contains($0) }
+        guard let newActive = candidates.last else { return }
+        activeSessionID = newActive
+        // Defer the SwiftUI selection write so we don't publish from
+        // inside a Combine sink that itself fires off AX events on the
+        // main run loop — without the hop, SwiftUI warns about
+        // "Publishing changes from within view updates."
+        Task { @MainActor [weak self] in
+            self?.store.selectedSessionID = newActive
+        }
+        repositionActive()
+        raiseActiveWithoutFocus()
     }
 
     private func handleGeometryEvent(_ event: AXObserver.Event) {

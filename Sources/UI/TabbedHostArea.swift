@@ -53,7 +53,8 @@ struct TabbedHostArea: View {
                     TabChip(
                         title: session.displayTitle,
                         host: hostRegistry.host(forID: session.hostID),
-                        isActive: session.id == store.selectedSessionID
+                        isActive: session.id == store.selectedSessionID,
+                        isMinimized: dockController.minimizedSessionIDs.contains(session.id)
                     ) {
                         store.selectedSessionID = session.id
                         // Same reasoning as the sidebar tap — DockController
@@ -137,6 +138,7 @@ private struct TabChip: View {
     let title: String
     let host: HostConfig?
     let isActive: Bool
+    let isMinimized: Bool
     let onTap: () -> Void
 
     var body: some View {
@@ -146,6 +148,7 @@ private struct TabChip: View {
                     HostIconView(host: host, size: 18)
                 }
                 Text(title)
+                    .italic(isMinimized)
                     .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
             }
@@ -154,6 +157,10 @@ private struct TabChip: View {
             .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
             .foregroundStyle(isActive ? Color.accentColor : .primary)
             .clipShape(RoundedRectangle(cornerRadius: 7))
+            // Match SessionRow's minimized treatment: italic title +
+            // 0.7 opacity. Two surfaces use the same visual vocabulary
+            // for the same state.
+            .opacity(isMinimized ? 0.7 : 1.0)
         }
         .buttonStyle(.plain)
     }

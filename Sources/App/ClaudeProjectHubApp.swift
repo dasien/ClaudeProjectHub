@@ -19,7 +19,7 @@ struct ClaudeProjectHubApp: App {
         let manager = WindowManager()
         let registry = HostRegistry()
         let monitor = SessionLifecycleMonitor(store: store, windowManager: manager)
-        let dock = DockController()
+        let dock = DockController(store: store)
         let scanner = ExternalSessionScanner(store: store, hostRegistry: registry)
         let pricing = ModelPricingRegistry()
         let attention = AttentionService(store: store, hostRegistry: registry)

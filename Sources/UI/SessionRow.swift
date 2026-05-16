@@ -4,12 +4,28 @@ struct SessionRow: View {
     let session: Session
     @EnvironmentObject private var hostRegistry: HostRegistry
     @EnvironmentObject private var attention: AttentionService
+    @EnvironmentObject private var dockController: DockController
+
+    private var isMinimized: Bool {
+        dockController.minimizedSessionIDs.contains(session.id)
+    }
+
+    /// Closed > minimized > running. Closed rows have the strongest
+    /// mute (0.55) because they're truly inactive; minimized rows
+    /// are alive but currently hidden — 0.7 reads as "dimmed but
+    /// not gone." Running rows are full opacity.
+    private var rowOpacity: Double {
+        if session.status == .closed { return 0.55 }
+        if isMinimized { return 0.7 }
+        return 1.0
+    }
 
     var body: some View {
         HStack(spacing: 10) {
             statusDot
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.displayTitle)
+                    .italic(isMinimized)
                     .font(.headline)
                     .lineLimit(1)
                 HStack(spacing: 4) {
@@ -27,7 +43,7 @@ struct SessionRow: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 2)
-        .opacity(session.status == .closed ? 0.55 : 1.0)
+        .opacity(rowOpacity)
     }
 
     @ViewBuilder

@@ -126,6 +126,19 @@ enum AXSupport {
         AXUIElementPerformAction(element, kAXRaiseAction as CFString)
     }
 
+    /// Sets `kAXMinimizedAttribute` on a window. `true` minimizes it
+    /// to the Dock; `false` restores it (the latter is how DockController
+    /// brings a previously-Cmd-M'd session back when the user reselects
+    /// it in the hub). Idempotent — writing the current value is a
+    /// no-op at the AX layer.
+    static func setMinimized(_ minimized: Bool, on element: AXUIElement) {
+        AXUIElementSetAttributeValue(
+            element,
+            kAXMinimizedAttribute as CFString,
+            minimized ? kCFBooleanTrue : kCFBooleanFalse
+        )
+    }
+
     static func pid(of element: AXUIElement) -> pid_t? {
         var pid: pid_t = 0
         let err = AXUIElementGetPid(element, &pid)

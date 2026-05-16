@@ -57,6 +57,19 @@ final class DockController: ObservableObject {
     private let undockThreshold: CGFloat = 30
     /// Token for the NSApplication.didBecomeActiveNotification observer.
     private var didBecomeActiveObserver: NSObjectProtocol?
+    /// Tokens for NSWorkspace app-hide/unhide observers — used to
+    /// detect Cmd-H on a docked foreign app, which doesn't fire any
+    /// AX notification we can observe per-window.
+    private var appHiddenObserver: NSObjectProtocol?
+    private var appUnhiddenObserver: NSObjectProtocol?
+    /// Sessions whose docked foreign window is currently minimized
+    /// (yellow button / Cmd-M) or whose foreign app is currently
+    /// hidden (Cmd-H). Tracking these so the raise + snap-back paths
+    /// don't fight the user's "make this disappear" gesture — without
+    /// the guard, hub-becomes-active would AX-raise the window and
+    /// effectively un-hide it. Sessions stay in `dockedSessionIDs`
+    /// while minimized; they're tracked, just not currently visible.
+    private var minimizedSessionIDs: Set<Session.ID> = []
 
     init() {
         // Re-raise the active docked window when the hub regains focus
@@ -78,11 +91,45 @@ final class DockController: ObservableObject {
                 self?.raiseActiveWithoutFocus(syncTab: false)
             }
         }
+
+        // Detect Cmd-H of foreign apps so we can stop re-raising their
+        // docked windows. NSWorkspace fires app-hide/unhide at the
+        // application level — there's no per-window AX event for
+        // Cmd-H (kAXWindowMiniaturized covers Cmd-M / yellow button
+        // only).
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        appHiddenObserver = workspaceCenter.addObserver(
+            forName: NSWorkspace.didHideApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            let pid = app.processIdentifier
+            Task { @MainActor in self.handleAppHidden(pid: pid) }
+        }
+        appUnhiddenObserver = workspaceCenter.addObserver(
+            forName: NSWorkspace.didUnhideApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            let pid = app.processIdentifier
+            Task { @MainActor in self.handleAppUnhidden(pid: pid) }
+        }
     }
 
     deinit {
         if let observer = didBecomeActiveObserver {
             NotificationCenter.default.removeObserver(observer)
+        }
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        if let observer = appHiddenObserver {
+            workspaceCenter.removeObserver(observer)
+        }
+        if let observer = appUnhiddenObserver {
+            workspaceCenter.removeObserver(observer)
         }
     }
 
@@ -173,6 +220,7 @@ final class DockController: ObservableObject {
         dragSettleTasks[sessionID]?.cancel()
         dragSettleTasks.removeValue(forKey: sessionID)
         dockedSessionIDs.removeAll { $0 == sessionID }
+        minimizedSessionIDs.remove(sessionID)
         if activeSessionID == sessionID {
             activeSessionID = dockedSessionIDs.first
         }
@@ -216,10 +264,39 @@ final class DockController: ObservableObject {
     /// inside the dock area (click-through to the foreign window
     /// activates it via the OS).
     func setActiveSessionID(_ id: Session.ID?) {
-        guard activeSessionID != id else { return }
+        let alreadyActive = activeSessionID == id
+        let needsRestore = id.map { minimizedSessionIDs.contains($0) } ?? false
+        // Normally clicking the already-active session is a no-op. But
+        // if the active session is currently minimized/hidden, the
+        // click is the user's "bring it back" gesture and we have to
+        // run the restore path.
+        guard !alreadyActive || needsRestore else { return }
+
+        if let id, needsRestore {
+            restore(sessionID: id)
+        }
         activeSessionID = id
         repositionActive()
         raiseActiveWithoutFocus()
+    }
+
+    /// Reverses a Cmd-M minimize and/or a Cmd-H app-hide for the
+    /// given docked session. Called when the user explicitly reselects
+    /// a minimized session in the hub. Idempotent — both writes are
+    /// no-ops if the corresponding state isn't set.
+    private func restore(sessionID: Session.ID) {
+        // Clear the flag eagerly so the raise that follows isn't
+        // blocked by our own guard. The AX deminiaturize event and
+        // NSWorkspace unhide event will arrive a beat later and find
+        // the set already clean — both removers are idempotent.
+        minimizedSessionIDs.remove(sessionID)
+        guard let element = bindings[sessionID] else { return }
+        AXSupport.setMinimized(false, on: element)
+        if let pid = AXSupport.pid(of: element),
+           let app = NSRunningApplication(processIdentifier: pid),
+           app.isHidden {
+            app.unhide()
+        }
     }
 
     // MARK: - Layout
@@ -265,6 +342,13 @@ final class DockController: ObservableObject {
     private func raiseActive() {
         guard let id = activeSessionID,
               let element = bindings[id] else { return }
+        // Don't raise a session whose window the user just hid or
+        // minimized — AXSupport.raise would un-hide the foreign app
+        // (setting AXMain / AXFocused on a hidden window deminiaturizes
+        // it on most macOS versions). Phase 8 step 3 will auto-promote
+        // a sibling so the tab bar stays coherent; for now we just
+        // respect the gesture.
+        guard !minimizedSessionIDs.contains(id) else { return }
         if let pid = AXSupport.pid(of: element),
            let app = NSRunningApplication(processIdentifier: pid) {
             app.activate()
@@ -287,6 +371,9 @@ final class DockController: ObservableObject {
     private func raiseActiveWithoutFocus(syncTab: Bool = true) {
         guard let id = activeSessionID,
               let element = bindings[id] else { return }
+        // See raiseActive for the rationale — minimized sessions get
+        // skipped so we don't un-hide the user's hidden window.
+        guard !minimizedSessionIDs.contains(id) else { return }
         AXSupport.raise(element)
         if syncTab { selectActiveTab() }
     }
@@ -336,7 +423,9 @@ final class DockController: ObservableObject {
         observer.subscribe(element: window, notifications: [
             AXNotification.moved,
             AXNotification.resized,
-            AXNotification.destroyed
+            AXNotification.destroyed,
+            AXNotification.miniaturized,
+            AXNotification.deminiaturized
         ])
     }
 
@@ -346,7 +435,9 @@ final class DockController: ObservableObject {
         observer.unsubscribe(element: window, notifications: [
             AXNotification.moved,
             AXNotification.resized,
-            AXNotification.destroyed
+            AXNotification.destroyed,
+            AXNotification.miniaturized,
+            AXNotification.deminiaturized
         ])
         // Don't drop the per-pid observer — sibling windows from the
         // same app may still be docked (e.g. two iTerm2 sessions).
@@ -358,8 +449,42 @@ final class DockController: ObservableObject {
             handleGeometryEvent(event)
         case AXNotification.destroyed:
             handleDestroyEvent(event)
+        case AXNotification.miniaturized:
+            handleMiniaturizedEvent(event)
+        case AXNotification.deminiaturized:
+            handleDeminiaturizedEvent(event)
         default:
             break
+        }
+    }
+
+    private func handleMiniaturizedEvent(_ event: AXObserver.Event) {
+        guard let sessionID = sessionID(for: event.element) else { return }
+        minimizedSessionIDs.insert(sessionID)
+    }
+
+    private func handleDeminiaturizedEvent(_ event: AXObserver.Event) {
+        guard let sessionID = sessionID(for: event.element) else { return }
+        minimizedSessionIDs.remove(sessionID)
+    }
+
+    /// Cmd-H hid the foreign app — mark every docked session that
+    /// belongs to it as "currently not visible" so we stop trying to
+    /// raise its window on hub-becomes-active. The session record
+    /// stays alive; we just respect the user's hide gesture.
+    private func handleAppHidden(pid: pid_t) {
+        for sessionID in dockedSessionIDs {
+            guard let element = bindings[sessionID],
+                  AXSupport.pid(of: element) == pid else { continue }
+            minimizedSessionIDs.insert(sessionID)
+        }
+    }
+
+    private func handleAppUnhidden(pid: pid_t) {
+        for sessionID in dockedSessionIDs {
+            guard let element = bindings[sessionID],
+                  AXSupport.pid(of: element) == pid else { continue }
+            minimizedSessionIDs.remove(sessionID)
         }
     }
 
@@ -377,6 +502,12 @@ final class DockController: ObservableObject {
         // to snap back (small nudge) or undock (real tear-out). AX
         // gives us no "drag ended" event so debounce is the proxy.
         guard let sessionID = sessionID(for: event.element) else { return }
+        // Ignore geometry events for minimized/hidden sessions —
+        // those are macOS animating the window to/from the Dock
+        // (Cmd-M), not the user dragging it out. Without this guard
+        // the snap-back-vs-undock evaluator would see a huge distance
+        // delta and undock the session.
+        guard !minimizedSessionIDs.contains(sessionID) else { return }
         dragSettleTasks[sessionID]?.cancel()
         dragSettleTasks[sessionID] = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 300_000_000)

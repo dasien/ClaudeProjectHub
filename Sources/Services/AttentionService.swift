@@ -19,11 +19,17 @@ import UserNotifications
 /// - User selects the session in the sidebar (via `store.selectedSessionID`)
 /// - Session transitions back to `.working` (or `.closed`)
 /// - User clicks the notification banner
+/// - The host app of the currently-selected session becomes active —
+///   covers "user clicked inside the docked foreign window," which is
+///   the natural acknowledgement gesture when the badged session is
+///   already the selected one (the selectedSessionID publisher above
+///   doesn't fire in that case because the selection didn't change)
 @MainActor
 final class AttentionService: NSObject, ObservableObject {
     @Published private(set) var needsAttention: Set<Session.ID> = []
 
     private let store: SessionStore
+    private let hostRegistry: HostRegistry
     private var lastStatus: [Session.ID: SessionStatus] = [:]
     private var idleDebounceTasks: [Session.ID: Task<Void, Never>] = [:]
     private var cancellables = Set<AnyCancellable>()
@@ -37,8 +43,9 @@ final class AttentionService: NSObject, ObservableObject {
     /// UserDefaults key for the on/off toggle in Settings.
     static let notificationsEnabledDefaultsKey = "notifyOnIdle"
 
-    init(store: SessionStore) {
+    init(store: SessionStore, hostRegistry: HostRegistry) {
         self.store = store
+        self.hostRegistry = hostRegistry
         super.init()
         UNUserNotificationCenter.current().delegate = self
 
@@ -58,6 +65,35 @@ final class AttentionService: NSObject, ObservableObject {
                 Task { @MainActor in self?.clearAttention(for: id) }
             }
             .store(in: &cancellables)
+
+        // Clear attention when the user clicks into the docked foreign
+        // window of the currently-selected session. The dock area is
+        // click-through, so a click in it activates the host app
+        // directly (rather than the hub). We treat that activation as
+        // "user has acknowledged the session" — same outcome as
+        // explicitly clicking the hub tab.
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didActivateApplicationNotification)
+            .sink { [weak self] notification in
+                guard let self,
+                      let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                      let bundleID = app.bundleIdentifier else { return }
+                Task { @MainActor in self.handleAppActivation(bundleID: bundleID) }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Called when any application becomes the foreground app.
+    /// If the activated app hosts the currently-selected session and
+    /// that session has an attention badge, treat the activation as
+    /// the user's acknowledgement and clear the badge.
+    private func handleAppActivation(bundleID: String) {
+        guard let selectedID = store.selectedSessionID,
+              needsAttention.contains(selectedID),
+              let session = store.sessions.first(where: { $0.id == selectedID }),
+              let host = hostRegistry.host(forID: session.hostID),
+              host.bundleIdentifier == bundleID else { return }
+        clearAttention(for: selectedID)
     }
 
     /// Request notification permission from the user. Idempotent —

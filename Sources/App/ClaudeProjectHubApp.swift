@@ -22,7 +22,7 @@ struct ClaudeProjectHubApp: App {
         let dock = DockController()
         let scanner = ExternalSessionScanner(store: store, hostRegistry: registry)
         let pricing = ModelPricingRegistry()
-        let attention = AttentionService(store: store)
+        let attention = AttentionService(store: store, hostRegistry: registry)
         _sessionStore = StateObject(wrappedValue: store)
         _windowManager = StateObject(wrappedValue: manager)
         _hostRegistry = StateObject(wrappedValue: registry)

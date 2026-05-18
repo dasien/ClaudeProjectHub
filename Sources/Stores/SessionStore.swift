@@ -6,16 +6,52 @@ final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [Session] = []
     /// Sidebar selection lives here (not in a SwiftUI @State) so that
     /// non-UI callers — like SessionLauncherService after a successful
-    /// launch — can update which session is selected.
+    /// launch — can update which session is selected. Persisted to
+    /// UserDefaults across hub restarts so the user comes back to the
+    /// session they were last on, not whichever happened to dock last.
     @Published var selectedSessionID: Session.ID?
+
+    /// UserDefaults key for the persisted last-selected session.
+    private static let selectedIDDefaultsKey = "ClaudeProjectHubSelectedSessionID"
 
     private let storeURL: URL
     private let persists: Bool
+    private var selectionPersistenceCancellable: AnyCancellable?
 
     init(storeURL: URL = SessionStore.defaultStoreURL, persists: Bool = true) {
         self.storeURL = storeURL
         self.persists = persists
         load()
+        restoreSelectedID()
+        installSelectionPersistence()
+    }
+
+    /// Read the last-selected session id from UserDefaults and apply
+    /// it — but only if the session still exists in the store. A
+    /// session that was deleted between runs would otherwise leave a
+    /// dangling selection that nothing can act on.
+    private func restoreSelectedID() {
+        guard persists else { return }
+        guard let raw = UserDefaults.standard.string(forKey: Self.selectedIDDefaultsKey),
+              let uuid = UUID(uuidString: raw),
+              sessions.contains(where: { $0.id == uuid }) else { return }
+        selectedSessionID = uuid
+    }
+
+    /// Mirror every change to selectedSessionID into UserDefaults so
+    /// the next launch can restore it. removeDuplicates avoids
+    /// thrashing when SwiftUI republishes the same value.
+    private func installSelectionPersistence() {
+        guard persists else { return }
+        selectionPersistenceCancellable = $selectedSessionID
+            .removeDuplicates()
+            .sink { id in
+                if let id {
+                    UserDefaults.standard.set(id.uuidString, forKey: Self.selectedIDDefaultsKey)
+                } else {
+                    UserDefaults.standard.removeObject(forKey: Self.selectedIDDefaultsKey)
+                }
+            }
     }
 
     func add(_ session: Session) {

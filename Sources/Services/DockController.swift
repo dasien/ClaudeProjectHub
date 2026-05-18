@@ -151,14 +151,19 @@ final class DockController: ObservableObject {
     }
 
     deinit {
+        // `removeHubWindowObservers` is @MainActor-isolated (inherited
+        // from this class) and can't be called from a nonisolated
+        // deinit, so inline the cleanup. NotificationCenter is
+        // thread-safe so direct removeObserver calls are fine here.
+        let center = NotificationCenter.default
         if let observer = didBecomeActiveObserver {
-            NotificationCenter.default.removeObserver(observer)
+            center.removeObserver(observer)
         }
         if let observer = hubWillMinimizeObserver {
-            NotificationCenter.default.removeObserver(observer)
+            center.removeObserver(observer)
         }
         if let observer = hubDidDeminiaturizeObserver {
-            NotificationCenter.default.removeObserver(observer)
+            center.removeObserver(observer)
         }
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         if let observer = appHiddenObserver {
@@ -193,6 +198,11 @@ final class DockController: ObservableObject {
     /// hub up and down (otherwise they'd orphan as top-level
     /// windows above the Dock when the hub minimizes).
     func attachHubWindow(_ window: NSWindow) {
+        // If the hub window is being re-created (user closed and
+        // reopened it), clean up stale observers from the previous
+        // attachment before installing fresh ones.
+        removeHubWindowObservers()
+
         mouseGate.attach(to: window)
         updateMouseGate()
 
@@ -210,6 +220,18 @@ final class DockController: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.handleHubDidDeminiaturize() }
+        }
+    }
+
+    private func removeHubWindowObservers() {
+        let center = NotificationCenter.default
+        if let observer = hubWillMinimizeObserver {
+            center.removeObserver(observer)
+            hubWillMinimizeObserver = nil
+        }
+        if let observer = hubDidDeminiaturizeObserver {
+            center.removeObserver(observer)
+            hubDidDeminiaturizeObserver = nil
         }
     }
 

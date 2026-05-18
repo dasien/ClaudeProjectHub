@@ -206,12 +206,18 @@ final class SessionLauncherService: ObservableObject {
         for session in candidates {
             await reattach(session)
         }
-        // Sync the SwiftUI selection with whichever session ended up
-        // active in DockController. Without this, the sidebar/tab bar
-        // would show no selection while the docked window is whatever
-        // got docked last.
-        if store.selectedSessionID == nil,
-           let activeID = dockController.activeSessionID {
+        // Reconcile the SwiftUI selection with DockController's active.
+        // SessionStore may have restored a selectedSessionID from
+        // UserDefaults; if that session is among the ones we just
+        // docked, make it the dock's active too (otherwise the last
+        // session iterated above wins by default, since dock() sets
+        // activeSessionID on every call). If there's no persisted
+        // selection, fall back to whatever ended up active.
+        if let persistedID = store.selectedSessionID,
+           dockController.dockedSessionIDs.contains(persistedID) {
+            dockController.setActiveSessionID(persistedID)
+        } else if store.selectedSessionID == nil,
+                  let activeID = dockController.activeSessionID {
             store.selectedSessionID = activeID
         }
     }

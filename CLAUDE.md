@@ -121,13 +121,19 @@ What it doesn't get us:
 
 Key files:
 - `Services/DockController.swift` — owns the set of docked session ids; reacts to hub move/resize and writes new frames to all docked windows
-- `Services/AXObserver.swift` — wraps the C-level AXObserver API; subscribes to `kAXMoved`, `kAXResized`, `kAXUIElementDestroyed`, `kAXTitleChanged`
+- `Services/AXObserver.swift` — wraps the C-level AXObserver API; subscribes to `kAXMoved`, `kAXResized`, `kAXUIElementDestroyed`, `kAXTitleChanged`, `kAXWindowMiniaturized`, `kAXWindowDeminiaturized`
 - `Services/AXWriteTracker.swift` — when we `setFrame` or `raise`, we record the (window, attribute, timestamp) tuple. AX events that match a recent write are flagged as not user-initiated, preventing cascade loops between our own writes and the resulting notifications
 - `Services/HubMouseGate.swift` — toggles `NSWindow.ignoresMouseEvents` based on cursor position vs the dock rect, so clicks over the dock area pass through to the foreign window underneath. Uses 30Hz polling rather than NSEvent monitors (see Lessons learned re: cmd-tab teleport leaving the gate stale)
 
 Undock-on-titlebar-drag threshold is 30px from the dock rect (Magnet-style). When the user drags a foreign window's title bar more than that distance, the AX position-changed event arrives with our `AXWriteTracker` flag absent (i.e. user-initiated) and `DockController` releases tracking.
 
 Tab switching for hosts that share one window across sessions (iTerm2 tabs, Terminal tabs) uses `Services/HostTabSelector.swift` to issue a host-specific AppleScript switch-to-tab call when the active session changes. iTerm2 returns the same `CGWindowID` for every tab in a window; the controlling tty distinguishes which session "is" which tab.
+
+Minimized/hidden state lives in two sets on `DockController`:
+- `minimizedSessionIDs` — docked sessions whose foreign window is currently minimized (Cmd-M, fed by AX `kAXWindowMiniaturized/Deminiaturized`) or whose foreign app is hidden (Cmd-H, fed by `NSWorkspace.didHide/UnhideApplication`). The raise + snap-back paths guard on this set so the hub doesn't fight the user's hide gesture. Active sessions in this set get auto-promoted to a sibling so the dock area shows a real window instead of an empty hole; if no sibling is available, `TabbedHostArea` renders an `eye.slash` placeholder.
+- `hubMinimizedSessionIDs` — sessions the hub itself minimized as part of a hub-window minimize. The matching restore un-minimizes only this set, so sessions the user had individually minimized stay minimized through a hub round-trip.
+
+Each docked session's row in the sidebar and its tab chip render italic + 0.7 opacity while in `minimizedSessionIDs`, so the UI vocabulary for "this session is alive but currently hidden" matches across both surfaces.
 
 ---
 
@@ -205,6 +211,12 @@ iTerm2's AppleScript dictionary properly supports `create window` / `create tab`
 ### Window title doesn't survive shell/claude
 
 For both Terminal and iTerm2, setting the tab/window title via AppleScript works *briefly* but the shell's first prompt and claude's startup print escape sequences that overwrite it within ~1 second. Don't rely on titles for AX binding when the host returns a window id directly. Use marker-in-title as a fallback only when no better option exists.
+
+### Cmd-H is app-level, Cmd-M is window-level — two different observers
+
+`kAXWindowMiniaturizedNotification` fires only for Cmd-M / yellow button (per-window minimize). Cmd-H is at the application level — it hides every window the app owns at once — and AX has no per-window event for it. To respect Cmd-H of a docked foreign app the hub also subscribes to `NSWorkspace.didHide` / `didUnhideApplication` and sweeps every docked session whose host pid matches.
+
+Also: `AXSupport.raise` sets `kAXMain` + `kAXFocused` before `AXRaise` (originally added for JBR), and on a hidden window those writes can un-hide the foreign app. So the hub's "re-raise the active docked window on becoming frontmost" path *must* guard on `minimizedSessionIDs` — without that guard, cmd-tabbing back to the hub would defeat the user's Cmd-H every time.
 
 ### `_AXUIElementGetWindow` is private but stable
 
@@ -327,7 +339,15 @@ log stream --predicate 'process == "tccd" AND (eventMessage CONTAINS "ClaudeProj
 - **M7 — script-driven hosts** (2026-04-28): collapsed `TerminalAppLauncher` / `ITerm2Launcher` / `ProcessLauncher` into a single `ScriptedHostLauncher`. Every host is now one `.applescript` file in `~/Library/Application Support/ClaudeProjectHub/scripts/`; defaults ship in the bundle. New hosts are added through Settings → Hosts (Display Name + Choose Application + auto-slug), and the user can drop in any host with a script — no Swift code change needed. Dropped `HostStrategy` / `BuiltinKind` from the model.
 - **M7 hosts shipped**: Terminal, iTerm2 (direct CGWindowID lookup, with iTermServer/tmux fallback via controlling-tty matching), VSCode (integrated-terminal launch via System Events keystroke).
 - **Docking phases 1-6** (2026-04-30): foreign windows pinned to the hub's dock rect via AX. Hub window is transparent at the dock area with `HubMouseGate` toggling `ignoresMouseEvents` so clicks pass through to the foreign window. Spawn-into-dock, drag-titlebar-out + 30px-threshold-snap-back undocking, right-click "Undock", external session adoption via `ExternalSessionScanner` + sidebar "Available to Dock" section, Cmd-1..9 tab keyboard shortcuts, per-tab AppleScript switching for hosts that share a window across multiple sessions (iTerm2 tabs, Terminal tabs). See the "Docking architecture" section above for the design.
+- **Docking Phase 8 — minimize/hide handling** (2026-05-17): docked foreign windows now respect Cmd-M (window minimize) and Cmd-H (app hide) without the hub fighting the gesture. `DockController.minimizedSessionIDs` is populated by AX `kAXWindowMiniaturized` and by NSWorkspace `didHide/UnhideApplication` notifications; the raise + snap-back paths guard on it. When the active session is hidden, the next-most-recently-docked sibling auto-promotes so the dock area shows a real window instead of an empty hole; the muted session's sidebar row and tab go italic + 0.7 opacity. When *all* docked sessions are hidden, the dock area shows an `eye.slash` placeholder ("All docked sessions are hidden. Click a tab to bring one back."). Hub minimize/restore propagates to all currently-visible docked windows via `kAXMinimizedAttribute` writes; sessions the user had individually minimized stay minimized through a hub round-trip. Step 6 of the sketch (undock-on-hub-close) was attempted then reverted — both red-button close (DockController state survives) and Cmd-Q (relaunch hits `reattachAll`) already do the right thing.
 - **Reattach on hub restart**: sessions whose underlying claude pid is still alive are re-bound and re-docked at startup via `SessionLauncherService.reattachAll()`. Dead pids are marked closed.
+- **`selectedSessionID` persisted across restarts**: `SessionStore` mirrors `selectedSessionID` to UserDefaults (`ClaudeProjectHubSelectedSessionID`) and restores it after `load()`. `SessionLauncherService.reattachAll` honors the restored value — if it matches a docked session, that session is made active via `setActiveSessionID` after the reattach loop. Without this, the default-active after relaunch was always the *most recently created* session (last in the iteration order), not the one the user had selected.
+- **Attention badge dismisses on docked-window click**: `AttentionService` observes `NSWorkspace.didActivateApplication`. When the host app of the currently-selected session becomes frontmost (the user clicked into the docked foreign window via the click-through dock area), the badge clears. Previously only an explicit hub-side selection change cleared it, so clicking into the docked window when the badged session was already selected left the badge stuck.
+- **App icon and combination mark** (2026-05-04): 7-spoke hub-and-satellite glyph on a Claude-warm squircle. Icon set wired through `Resources/Assets.xcassets/AppIcon.appiconset` + `ASSETCATALOG_COMPILER_APPICON_NAME` + `CFBundleIconName`. Combination mark (icon + "Claude Project Hub" wordmark) at `logos/iterations/iteration-8.svg`. Reusable Swift export script at `logos/export.swift` uses NSImage's native SVG support.
+- **Per-developer signing setup**: `DEVELOPMENT_TEAM` lives in `signing.xcconfig` (gitignored). Each contributor copies `signing.xcconfig.example` → `signing.xcconfig` and fills in their team id. `project.yml` references the xcconfig via `configFiles` so collaborators no longer have to edit `project.yml` to build. Second scheme `ClaudeProjectHub (Release)` so ⌘B targets Release without flipping the default scheme.
+- **Dock-area resize inset**: 8px on the right and bottom of the dock area so the hub's NSWindow resize edges remain exposed when foreign windows are docked. Visually matches the sidebar's natural margin.
+- **M9 — Documentation** (2026-05-03): README refreshed (12 hosts, accurate project layout, signing setup, combination mark at top, dropped stale references). `USER_GUIDE.md` for end-user flows (permissions, session lifecycle, docking, Get Info, notifications, Settings, files on disk, quirks). `INTEGRATIONS_GUIDE.md` for contributors adding hosts (placeholder + return-value contracts, three patterns with examples, lessons baked into bundled scripts, testing checklist). `DOCKING.md` distilled into the "Docking architecture" subsection of this file and deleted. All docs grouped under "Docs" in the Xcode project tree.
+- **M10 — Idle session notifications** (2026-05-02): when a session transitions `.working` → `.idle` with a 2.5s debounce, the sidebar row shows a pulsing red `systemRed` attention badge. If the hub isn't frontmost, a `UserNotifications` banner fires with the session's display title; clicking it focuses the hub and selects the session. Settings → General → "Notify when a session goes idle" toggles the banner (the in-app badge always shows). Authorization requested via `UNUserNotificationCenter.requestAuthorization` on first idle.
 - **M8 — Per-session Get Info window** (2026-05-01, scoped down from a global dashboard): right-click any session → "Get Info" opens a popout showing cost + per-model token usage parsed from the JSONL transcript. Pricing data lives in `Resources/models.json` (Claude 4.x family with 5m + 1h cache write rates and cache-read rates per 1M tokens, as of 2026-05); copies to `~/Library/Application Support/ClaudeProjectHub/models.json` on first run for user editability. JSONL parser is `ClaudeSessionTranscript`. Window also has "Show in Finder" buttons next to the project directory and the Claude session id; transcript-not-yet-recorded sessions get an alert matching the Resume "no conversation found" pattern.
 - **Hub window state persistence**: hub window frame saved/restored via `UserDefaults` in `HubWindowConfigurator`. SwiftUI's stock state restoration didn't apply consistently with our manual NSWindow configuration; direct save-on-resize/move + restore-on-appear is unambiguous and screen-aware (won't restore an off-screen frame from a previous monitor layout).
 - Resume from closed sessions (with stale-`claudeSessionId` recovery + empty-conversation guard)
@@ -352,32 +372,9 @@ CLI-spawnable terminals (Ghostty, Alacritty, WezTerm, kitty, …) don't need new
 
 The per-session Get Info popout shipped (see Done above). A *cross-session* dashboard — a table of all hub-tracked + external claude sessions on the machine with sortable columns, total cost, time-range filters — was intentionally deferred to keep scope tight. Most of the foundation is already in place: `ClaudeSessionTranscript` parses JSONLs, `ModelPricingRegistry` does cost lookup, `ClaudeSessionFile.enumerateAll` walks `~/.claude/sessions/`. When this is picked back up, it's mostly a SwiftUI `Table` over those existing primitives.
 
-#### M9 — Documentation
+#### Docking Phase 9 polish
 
-This file (CLAUDE.md) and README.md are part of M9. Still open:
-
-- **INTEGRATIONS_GUIDE.md** — how to add a new host: pick an app, edit its `.applescript` from `_template.applescript`, document the placeholder contract and the AX-diff fallback. Cross-reference the lessons in this file.
-- **USER_GUIDE.md** — end-user flows: new session, resume, rename, adding a host through Settings or by editing `hosts.json` + a script directly.
-
-#### M10 — Idle session notifications
-
-Surface a notification (banner via `UserNotifications` framework, dock badge with count, or both — pick what's HIG-compliant) when a Claude session transitions from `.working` → `.idle`. Trigger lives in `SessionLifecycleMonitor` where the status flip is already detected.
-
-The user-value is "your session needs you" — claude is sitting waiting for input or asking a question, but the user might be in another app and wouldn't otherwise know.
-
-Considerations:
-- Don't notify if the hub is the active app (user can already see).
-- Don't notify on the *initial* idle (first state read after launch — the session was always idle, didn't transition).
-- Throttle: a single user keystroke can flip the state to working briefly then back to idle within a second; debounce or only notify if idle for some minimum duration.
-- Settings toggle to disable notifications globally.
-- Click action on the notification: focus that session in the hub.
-
-Authorization: request via `UNUserNotificationCenter.current().requestAuthorization` on first launch (similar to the AX permission flow), gracefully degrade if denied.
-
-#### Docking remaining phases
-
-- **Phase 8 (narrowed)** — handle the hub being minimized (pause docked-window tracking; on restore, re-snap positions) and foreign windows being minimized by the user (release tracking? hide tab? design call). Multi-monitor and AX-trust-loss moved to Deferred.
-- **Phase 9 polish** — tab icons + larger chips shipped. Remaining: animation on dock/undock, tab thumbnails (would use ScreenCaptureKit), drag-to-reorder tabs.
+Tab icons + larger chips shipped. Remaining: animation on dock/undock, tab thumbnails (would use ScreenCaptureKit), drag-to-reorder tabs.
 
 ### Deferred (no milestone, available anytime)
 
@@ -387,6 +384,7 @@ Authorization: request via `UNUserNotificationCenter.current().requestAuthorizat
 - **AX-trust-loss handling** — if the user revokes Accessibility permission mid-session, gracefully release docked windows and surface an error rather than silently malfunctioning.
 - **Eliminate the two "Publishing changes from within view updates" warnings** — currently fire on every successful sidebar/tab click. Don't appear to cause observable bugs (the noisy bug was the simultaneousGesture cascade we already removed), but ideally fix by routing the active-tab sync through a Combine subscription on `store.$selectedSessionID` in `DockController.init` instead of `.onChange` in MainView.
 - **Restore minimized session on re-click of already-selected row** — when the user Cmd-H's or Cmd-M's a docked session that's also the hub's selected row, the sidebar click path can't restore it because SwiftUI's `List` selection binding only fires `onChange` on a *different* selection. The user's current workaround is select another session then back. We tried `.onTapGesture(count: 2)` on the sidebar row + a `DockController.bringActive` force-forward method (see git history around 2026-05-16), but the gesture made single-click selection behavior inconsistent on macOS Lists and was reverted. Alternatives to explore: (a) update the existing right-click → "Show" action to call a force-forward path for docked-minimized sessions, (b) a keyboard shortcut (e.g. ⌘R) to refocus the selected session, (c) a toolbar button "Show selected." The `restore()` logic in `DockController` is already in place and idempotent — only the entry point needs to be wired.
+- **Docked-window z-order on hub quit** — when the hub Cmd-Q's, the foreign apps regain focus and surface *their* current main window, which may be a non-docked window that was behind the hub. The docked windows are still alive and visible but end up behind whatever the foreign app brought forward. Recoverable via Cmd-Tab + cycling within the foreign app. Partial fix would be AX-raising each docked window during hub-quit so it becomes the foreign app's "main" — but each app can only have one main window, so a multi-docked-windows-per-app scenario only surfaces one. Not critical (red-button close doesn't have this issue; the foreign windows stay exactly where they were).
 
 ---
 

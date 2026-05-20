@@ -80,6 +80,28 @@ When the active session has a dockable host window, the hub repositions that win
 
 Some hosts share one window across multiple sessions (iTerm2 tabs, Terminal tabs). For those, switching sessions in the hub also tells the host to switch its internal tab.
 
+### Hiding and minimizing docked windows
+
+The hub respects your hide and minimize gestures on docked foreign windows:
+
+- **Cmd-H** on a docked foreign app hides the whole app (standard macOS). The hub doesn't fight it.
+- **Cmd-M / yellow titlebar button** minimizes a single docked window to the Dock.
+
+When a docked session is hidden or minimized, its sidebar row and tab chip render in *italic + dimmed*. The session record stays alive. If the hidden session was the active one and other docked sessions are still visible, the hub auto-promotes the most recently docked sibling to active so the dock area doesn't go empty. If *every* docked session is hidden, the dock area shows a placeholder ("All docked sessions are hidden. Click a tab to bring one back.").
+
+To restore a hidden session:
+
+- Click its sidebar row or tab — the hub deminiaturizes the window and/or unhides the host app, then raises it.
+- Or restore from the macOS Dock / by Cmd-Tab'ing to the host app directly.
+
+**Known limitation:** if the session you want to restore is already the *selected* row in the sidebar, single-clicking it again is a no-op (SwiftUI's List selection only fires on a *change*). Workaround: select a different session, then back to the hidden one. Logged in CLAUDE.md's Deferred section.
+
+### Hub minimize and close
+
+- **Minimize the hub** (yellow titlebar / Cmd-M on the hub) → every currently-visible docked window minimizes alongside it. Sessions you had individually hidden before stay hidden through a hub round-trip; restoring the hub un-minimizes only the windows the hub took down.
+- **Close the hub** (red titlebar / Cmd-W) → the hub window goes away but the app keeps running. Docked windows stay where they are; reopen the hub from the Dock and they're tracked again. Claude processes are unaffected.
+- **Quit the app** (Cmd-Q) → the next launch re-binds and re-docks every live session. The last-selected session is remembered across restarts and becomes the active tab on re-launch.
+
 ## Get Info — cost & token usage
 
 Right-click any session → **Get Info** opens a popout with:
@@ -102,6 +124,12 @@ When a session transitions from **working** → **idle** — i.e. Claude is sitt
 The hub asks for **Notifications** permission the first time a session would notify; grant it once.
 
 Toggle the whole thing in **Settings → General → Notify when a session goes idle**.
+
+The badge clears when:
+- You select the session in the sidebar or via its tab
+- You click into the docked foreign window (the host app activating counts as acknowledgement)
+- Claude resumes working
+- You click the macOS notification banner
 
 ## Settings (⌘,)
 

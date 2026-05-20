@@ -3,14 +3,14 @@ import Foundation
 /// Token totals aggregated across an entire JSONL transcript, broken
 /// out per model so a session that mixed Sonnet with Opus prices each
 /// segment correctly.
-struct SessionUsage: Equatable {
+struct SessionUsage: Equatable, Codable {
     /// Per-model token totals.
     var byModel: [String: ModelTotals] = [:]
     /// Number of assistant messages we counted (not tool calls or
     /// snapshot lines).
     var assistantMessageCount: Int = 0
 
-    struct ModelTotals: Equatable {
+    struct ModelTotals: Equatable, Codable {
         var inputTokens: Int = 0
         var outputTokens: Int = 0
         var cacheWrite5mTokens: Int = 0

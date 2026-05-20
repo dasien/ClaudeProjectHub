@@ -11,6 +11,7 @@ struct ClaudeProjectHubApp: App {
     @StateObject private var externalScanner: ExternalSessionScanner
     @StateObject private var pricingRegistry: ModelPricingRegistry
     @StateObject private var attentionService: AttentionService
+    @StateObject private var sessionCatalog: SessionCatalog
 
     @AppStorage("appearance") private var appearance: String = "system"
 
@@ -23,6 +24,7 @@ struct ClaudeProjectHubApp: App {
         let scanner = ExternalSessionScanner(store: store, hostRegistry: registry)
         let pricing = ModelPricingRegistry()
         let attention = AttentionService(store: store, hostRegistry: registry)
+        let catalog = SessionCatalog(store: store, hostRegistry: registry, pricing: pricing)
         _sessionStore = StateObject(wrappedValue: store)
         _windowManager = StateObject(wrappedValue: manager)
         _hostRegistry = StateObject(wrappedValue: registry)
@@ -31,6 +33,7 @@ struct ClaudeProjectHubApp: App {
         _externalScanner = StateObject(wrappedValue: scanner)
         _pricingRegistry = StateObject(wrappedValue: pricing)
         _attentionService = StateObject(wrappedValue: attention)
+        _sessionCatalog = StateObject(wrappedValue: catalog)
         _launcherService = StateObject(wrappedValue: SessionLauncherService(
             store: store,
             windowManager: manager,
@@ -81,6 +84,17 @@ struct ClaudeProjectHubApp: App {
                     .preferredColorScheme(preferredColorScheme)
             }
         }
+
+        // Cross-session dashboard. Single-instance — Window (not
+        // WindowGroup) — because there's only one logical dashboard
+        // view of the machine's sessions. Re-opening (Cmd-Shift-D or
+        // Window menu) just raises the existing window.
+        Window("Sessions Dashboard", id: "sessions-dashboard") {
+            SessionsDashboardView()
+                .environmentObject(sessionCatalog)
+                .preferredColorScheme(preferredColorScheme)
+        }
+        .keyboardShortcut("d", modifiers: [.command, .shift])
     }
 
     private var preferredColorScheme: ColorScheme? {

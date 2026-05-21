@@ -30,6 +30,7 @@ final class DockController: ObservableObject {
     private var tabIDsBySession: [Session.ID: String] = [:]
     private var observers: [pid_t: AXObserver] = [:]
     private let tracker = AXWriteTracker()
+    private lazy var animator = FrameAnimator(tracker: tracker)
     /// Toggles ignoresMouseEvents on the hub window based on cursor
     /// position so clicks pass through to the docked foreign window
     /// when over the dock area.
@@ -309,9 +310,42 @@ final class DockController: ObservableObject {
         // away after the fact.
         activeSessionID = sessionID
         observe(window: window)
-        repositionAll()
+        // Snap sibling docked sessions to the current dockRect (they
+        // were already at it; this catches any drift). The newly-
+        // added session gets an animated glide-in instead.
+        for id in dockedSessionIDs where id != sessionID {
+            repositionOne(id)
+        }
+        animateInto(sessionID: sessionID, from: initialFrame, element: window)
         raiseActive()
         updateMouseGate()
+    }
+
+    /// Animate the newly-docked window from its launch frame to the
+    /// dock rect. Falls back to a snap (the existing `repositionOne`
+    /// path) when we don't have a valid start frame or the dock rect
+    /// hasn't been reported yet.
+    private func animateInto(
+        sessionID: Session.ID,
+        from initialFrame: CGRect,
+        element: AXUIElement
+    ) {
+        guard !initialFrame.isEmpty,
+              !dockRect.isEmpty,
+              let cgID = cgIDsBySession[sessionID] else {
+            repositionOne(sessionID)
+            return
+        }
+        animator.animate(
+            sessionID: sessionID,
+            element: element,
+            windowID: cgID,
+            from: initialFrame,
+            to: dockRect
+        )
+        // Skip future redundant snap writes for this session — the
+        // animator's last step lands on dockRect.
+        lastWrittenFrames[sessionID] = dockRect
     }
 
     /// Stops pinning the session's host window. By default restores
@@ -322,6 +356,19 @@ final class DockController: ObservableObject {
     func undock(sessionID: Session.ID, restoreFrame: Bool = true) {
         guard dockedSessionIDs.contains(sessionID) else { return }
 
+        // Cancel any in-flight dock-in animation for this session
+        // before we start a new undock animation or release the
+        // window — otherwise the animator would keep writing dock-
+        // rect frames after we've handed control back.
+        animator.cancel(sessionID: sessionID)
+
+        // Snap to the pre-dock frame instead of animating: the
+        // pre-dock position is often behind the hub (where the
+        // host app spawned the window before docking), so an
+        // undock animation would glide the window into a hidden
+        // destination and read as "just disappeared" to the user.
+        // Dock-in animation stays — that motion is into the
+        // visible dock area.
         if restoreFrame,
            let element = bindings[sessionID],
            let preFrame = preDockFrames[sessionID],

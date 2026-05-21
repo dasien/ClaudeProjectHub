@@ -120,7 +120,11 @@ struct SessionsSidebar: View {
                 store.selectedSessionID = session.id
                 windowManager.focus(session.id)
             }
-            if !dockController.dockedSessionIDs.contains(session.id) {
+            if dockController.dockedSessionIDs.contains(session.id) {
+                Button("Undock") {
+                    dockController.undock(sessionID: session.id)
+                }
+            } else {
                 Button("Dock") {
                     redock(session)
                 }

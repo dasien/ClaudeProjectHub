@@ -10,6 +10,16 @@ struct SessionRow: View {
         dockController.minimizedSessionIDs.contains(session.id)
     }
 
+    /// True when the session is alive but not currently pinned into
+    /// the hub's dock area. The session is still hub-managed (we have
+    /// the AX binding, status updates, etc.), just free-floating on
+    /// the desktop. Visually flagged with a small outward-arrow icon
+    /// so the user can spot which rows would benefit from a Dock
+    /// action.
+    private var isUndocked: Bool {
+        session.status.isRunning && !dockController.dockedSessionIDs.contains(session.id)
+    }
+
     /// Closed > minimized > running. Closed rows have the strongest
     /// mute (0.55) because they're truly inactive; minimized rows
     /// are alive but currently hidden — 0.7 reads as "dimmed but
@@ -24,10 +34,18 @@ struct SessionRow: View {
         HStack(spacing: 10) {
             statusDot
             VStack(alignment: .leading, spacing: 2) {
-                Text(session.displayTitle)
-                    .italic(isMinimized)
-                    .font(.headline)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(session.displayTitle)
+                        .italic(isMinimized)
+                        .font(.headline)
+                        .lineLimit(1)
+                    if isUndocked {
+                        Image(systemName: "pip.exit")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .help("Free-floating — right-click → Dock to re-attach")
+                    }
+                }
                 HStack(spacing: 4) {
                     if let host = hostRegistry.host(forID: session.hostID) {
                         HostIconView(host: host, size: 12)

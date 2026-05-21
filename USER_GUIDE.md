@@ -74,9 +74,11 @@ Right-click a closed session → **Remove from List**. Stops tracking the sessio
 When the active session has a dockable host window, the hub repositions that window to overlap the tab area. From the user's perspective the host window appears to live inside the hub.
 
 - ⌘1 — ⌘9 jump to the corresponding tab.
+- ⌘⇧F transfers keyboard focus from the hub to the selected session's host window — useful after navigating sessions with the keyboard or clicks, when you want to start typing in the docked terminal/IDE without a mouse round-trip into it. Also exposed as **Window → Focus Active Session** in the menu bar.
 - Drag a docked window's title bar more than ~30px out of the dock area to undock it. The host window becomes free-floating again.
-- Right-click a tab → **Undock** does the same thing deliberately.
-- A session that started in a tab can be re-docked: right-click it in the sidebar → **Dock**.
+- Right-click a session in the sidebar → **Undock** (when docked) or **Dock** (when free-floating). Tabs themselves have no right-click menu — all dock-state actions live in the sidebar.
+
+A free-floating (undocked but still hub-managed) session shows a small **pip.exit** icon next to its title in the sidebar. The session is still alive, status updates still fire, but the foreign window is on its own somewhere on your desktop. Right-click → **Dock** to re-attach.
 
 Some hosts share one window across multiple sessions (iTerm2 tabs, Terminal tabs). For those, switching sessions in the hub also tells the host to switch its internal tab.
 

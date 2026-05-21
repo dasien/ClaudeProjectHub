@@ -74,13 +74,6 @@ struct TabbedHostArea: View {
                     // docked terminal directly, Terminal sees the key
                     // event first.
                     .keyboardShortcut(Self.shortcut(for: index))
-                    .contextMenu {
-                        if dockController.dockedSessionIDs.contains(session.id) {
-                            Button("Undock") {
-                                dockController.undock(sessionID: session.id)
-                            }
-                        }
-                    }
                 }
             }
             .padding(.horizontal, 8)

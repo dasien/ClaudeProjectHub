@@ -65,6 +65,24 @@ struct ClaudeProjectHubApp: App {
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
+        .commands {
+            // Cmd-Shift-F: hand keyboard focus from the hub to the
+            // currently-selected session's host window. Lets the
+            // user select with click-or-arrow-keys and then "drop
+            // into" the docked terminal/IDE without a mouse round-
+            // trip into the foreign window. windowManager.focus()
+            // does the activate + AX raise; it works for both
+            // docked and free-floating running sessions.
+            CommandGroup(after: .windowList) {
+                Button("Focus Active Session") {
+                    if let id = sessionStore.selectedSessionID {
+                        windowManager.focus(id)
+                    }
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .disabled(sessionStore.selectedSessionID == nil)
+            }
+        }
 
         Settings {
             SettingsView()

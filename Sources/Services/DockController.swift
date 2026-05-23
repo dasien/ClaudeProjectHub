@@ -67,6 +67,13 @@ final class DockController: ObservableObject {
     /// Installed in `attachHubWindow`.
     private var hubWillMinimizeObserver: NSObjectProtocol?
     private var hubDidDeminiaturizeObserver: NSObjectProtocol?
+    /// Tokens for the hub's app-level Cmd-H observers. App-hide is
+    /// signaled by `NSApplication.willHide` / `didUnhide` rather than
+    /// the window-level miniaturize notifications, so it needs its
+    /// own pair of observers — installed in `init` since they're
+    /// tied to NSApp, not to a specific window.
+    private var hubWillHideObserver: NSObjectProtocol?
+    private var hubDidUnhideObserver: NSObjectProtocol?
     /// Sessions the hub itself minimized as part of a hub-window
     /// minimize. Used so a hub-restore only un-minimizes the ones
     /// the *hub* hid, not sessions the user had individually
@@ -149,6 +156,27 @@ final class DockController: ObservableObject {
             let pid = app.processIdentifier
             Task { @MainActor in self.handleAppUnhidden(pid: pid) }
         }
+
+        // Detect Cmd-H of the hub itself so docked windows hide
+        // alongside the hub instead of orphaning on screen.
+        // NSApplication.willHide/didUnhide are app-level (not
+        // window-level) and only fire for THIS app's hide gestures,
+        // so we don't need to filter by sender.
+        let appCenter = NotificationCenter.default
+        hubWillHideObserver = appCenter.addObserver(
+            forName: NSApplication.willHideNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.handleHubWillMinimize() }
+        }
+        hubDidUnhideObserver = appCenter.addObserver(
+            forName: NSApplication.didUnhideNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.handleHubDidDeminiaturize() }
+        }
     }
 
     deinit {
@@ -164,6 +192,12 @@ final class DockController: ObservableObject {
             center.removeObserver(observer)
         }
         if let observer = hubDidDeminiaturizeObserver {
+            center.removeObserver(observer)
+        }
+        if let observer = hubWillHideObserver {
+            center.removeObserver(observer)
+        }
+        if let observer = hubDidUnhideObserver {
             center.removeObserver(observer)
         }
         let workspaceCenter = NSWorkspace.shared.notificationCenter

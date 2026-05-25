@@ -16,6 +16,17 @@ struct TabbedHostArea: View {
     /// Matches the sidebar's natural inset visually.
     private static let dockInset: CGFloat = 8
 
+    /// Shape used for both the dock-area background clip and the
+    /// 1px stroke border. Only the top corners are rounded so the
+    /// frame hugs the foreign window's macOS-rendered rounded
+    /// corners. Radius ≈ standard macOS window corner radius.
+    private static let dockShape = UnevenRoundedRectangle(
+        topLeadingRadius: 10,
+        bottomLeadingRadius: 0,
+        bottomTrailingRadius: 0,
+        topTrailingRadius: 10
+    )
+
     var body: some View {
         VStack(spacing: 0) {
             tabBar
@@ -29,15 +40,18 @@ struct TabbedHostArea: View {
                 .dockAreaFrame { rect in
                     dockController.setDockRect(rect)
                 }
-                // 1px frame around the dock area — defines the "hole"
-                // visually whether or not a foreign window fills it.
-                // strokeBorder draws fully inside the bounds (vs
-                // .stroke which is half-inside, half-outside) so it
-                // doesn't bleed into the tab bar's row.
-                // allowsHitTesting(false) so the stroke doesn't absorb
-                // clicks meant for the docked window.
+                // Round only the TOP corners to roughly match the
+                // foreign window's macOS-rendered corner radius (~10px),
+                // so the frame visually hugs the docked window instead
+                // of cutting a square hole around its rounded edges.
+                // Bottom corners stay square — the dock-area inset
+                // padding hides them anyway, and the bottom of the dock
+                // area sits against the hub window's own bottom corners.
+                // clipShape applies to the placeholder background so it
+                // ALSO has rounded tops, not just the stroke.
+                .clipShape(Self.dockShape)
                 .overlay(
-                    Rectangle()
+                    Self.dockShape
                         .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
                         .allowsHitTesting(false)
                 )

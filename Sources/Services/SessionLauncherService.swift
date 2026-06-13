@@ -261,6 +261,38 @@ final class SessionLauncherService: ObservableObject {
         return true
     }
 
+    /// Adopts a historical (closed, non-hub-launched) session
+    /// discovered on disk by `HistoricalSessionScanner` and immediately
+    /// resumes it through the chosen host. Creates a Session record with
+    /// `status: .closed` so the existing `resume(_:)` path runs unchanged
+    /// — it handles the JSONL-exists check, sets `lastActivityAt`, and
+    /// flips status to `.idle` on launch. The record stays in the store
+    /// regardless of resume success (consistent with hub-launched closed
+    /// sessions); the user can remove it via right-click if a resume
+    /// failure makes it unwanted.
+    @discardableResult
+    func adoptHistorical(
+        _ historical: HistoricalSession,
+        hostID: String,
+        windowMode: WindowMode = .newWindow,
+        targetSessionID: Session.ID? = nil
+    ) async -> Bool {
+        guard hostRegistry.host(forID: hostID) != nil else {
+            presentError(LauncherError.unknownHost(hostID))
+            return false
+        }
+        let session = Session(
+            name: nil,
+            cwd: historical.cwd,
+            hostID: hostID,
+            claudeSessionId: historical.claudeSessionId,
+            status: .closed,
+            lastActivityAt: historical.lastActivityAt
+        )
+        store.add(session)
+        return await resume(session, windowMode: windowMode, targetSessionID: targetSessionID)
+    }
+
     /// Adopts an external claude session — one running on the
     /// machine that the hub didn't launch. Resolves the host window
     /// via `HostWindowResolver` (parent-walk first, falling back to

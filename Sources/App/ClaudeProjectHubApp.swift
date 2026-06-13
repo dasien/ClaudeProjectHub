@@ -9,6 +9,8 @@ struct ClaudeProjectHubApp: App {
     @StateObject private var launcherService: SessionLauncherService
     @StateObject private var dockController: DockController
     @StateObject private var externalScanner: ExternalSessionScanner
+    @StateObject private var historicalScanner: HistoricalSessionScanner
+    @StateObject private var dismissedHistoricalStore: DismissedHistoricalStore
     @StateObject private var pricingRegistry: ModelPricingRegistry
     @StateObject private var attentionService: AttentionService
     @StateObject private var sessionCatalog: SessionCatalog
@@ -22,6 +24,8 @@ struct ClaudeProjectHubApp: App {
         let monitor = SessionLifecycleMonitor(store: store, windowManager: manager)
         let dock = DockController(store: store)
         let scanner = ExternalSessionScanner(store: store, hostRegistry: registry)
+        let dismissed = DismissedHistoricalStore()
+        let historical = HistoricalSessionScanner(store: store, dismissedStore: dismissed)
         let pricing = ModelPricingRegistry()
         let attention = AttentionService(store: store, hostRegistry: registry)
         let catalog = SessionCatalog(store: store, hostRegistry: registry, pricing: pricing)
@@ -31,6 +35,8 @@ struct ClaudeProjectHubApp: App {
         _lifecycleMonitor = StateObject(wrappedValue: monitor)
         _dockController = StateObject(wrappedValue: dock)
         _externalScanner = StateObject(wrappedValue: scanner)
+        _historicalScanner = StateObject(wrappedValue: historical)
+        _dismissedHistoricalStore = StateObject(wrappedValue: dismissed)
         _pricingRegistry = StateObject(wrappedValue: pricing)
         _attentionService = StateObject(wrappedValue: attention)
         _sessionCatalog = StateObject(wrappedValue: catalog)
@@ -52,6 +58,8 @@ struct ClaudeProjectHubApp: App {
                 .environmentObject(launcherService)
                 .environmentObject(dockController)
                 .environmentObject(externalScanner)
+                .environmentObject(historicalScanner)
+                .environmentObject(dismissedHistoricalStore)
                 .environmentObject(pricingRegistry)
                 .environmentObject(attentionService)
                 .frame(minWidth: 900, minHeight: 600)
@@ -59,6 +67,7 @@ struct ClaudeProjectHubApp: App {
                 .onAppear {
                     lifecycleMonitor.start()
                     externalScanner.start()
+                    historicalScanner.start()
                     attentionService.requestAuthorizationIfNeeded()
                     Task { await launcherService.reattachAll() }
                 }
@@ -87,6 +96,7 @@ struct ClaudeProjectHubApp: App {
         Settings {
             SettingsView()
                 .environmentObject(hostRegistry)
+                .environmentObject(dismissedHistoricalStore)
                 .preferredColorScheme(preferredColorScheme)
         }
 

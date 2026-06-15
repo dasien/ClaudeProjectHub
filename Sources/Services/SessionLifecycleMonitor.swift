@@ -1,6 +1,9 @@
 import Combine
 import Darwin
 import Foundation
+import os.log
+
+private let log = Logger(subsystem: "com.bgentry.ClaudeProjectHub", category: "Lifecycle")
 
 /// Watches each running session's `claude` process and the per-process
 /// metadata file Claude writes at `~/.claude/sessions/<pid>.json`.
@@ -16,12 +19,14 @@ import Foundation
 final class SessionLifecycleMonitor: ObservableObject {
     private let store: SessionStore
     private let windowManager: WindowManager
+    private let dockController: DockController
     private var monitorTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
 
-    init(store: SessionStore, windowManager: WindowManager) {
+    init(store: SessionStore, windowManager: WindowManager, dockController: DockController) {
         self.store = store
         self.windowManager = windowManager
+        self.dockController = dockController
     }
 
     /// Subscribes to session changes; starts polling when any session is
@@ -85,7 +90,25 @@ final class SessionLifecycleMonitor: ObservableObject {
                 continue
             }
 
-            // Process is alive — refine status from Claude's per-process file.
+            // Process is alive — self-heal tab routing if it's missing.
+            // ProcessTree.controllingTTY(of:) can return nil at launch
+            // time if it's called before the kernel has assigned a
+            // controlling tty to the new claude process. When that
+            // happens, DockController never gets a tabID for the
+            // session and `selectActiveTab()` early-returns forever —
+            // multi-tab hosts (iTerm2, Terminal) will raise the host's
+            // window but stay on whichever tab was already front.
+            // Catch the miss here by re-deriving on every poll cycle
+            // for docked-but-tab-id-less sessions. Idempotent for
+            // sessions that already have a tabID (we don't re-derive).
+            if dockController.dockedSessionIDs.contains(session.id),
+               !dockController.hasTabID(forSession: session.id),
+               let tty = ProcessTree.controllingTTY(of: pid) {
+                dockController.setTabID(sessionID: session.id, tabID: tty)
+                log.notice("Self-healed missing tabID for pid \(pid, privacy: .public) (tty=\(tty, privacy: .public))")
+            }
+
+            // Refine status from Claude's per-process file.
             guard let file = ClaudeSessionFile.read(pid: pid) else { continue }
             let newStatus: SessionStatus = (file.status == "busy") ? .working : .idle
             let newActivity: Date? = file.updatedAt.map {

@@ -1,7 +1,10 @@
 import AppKit
 import CoreGraphics
 import Darwin
+import os.log
 import SwiftUI
+
+private let launcherLog = Logger(subsystem: "com.bgentry.ClaudeProjectHub", category: "Launcher")
 
 @MainActor
 final class SessionLauncherService: ObservableObject {
@@ -10,6 +13,7 @@ final class SessionLauncherService: ObservableObject {
     private let hostRegistry: HostRegistry
     private let dockController: DockController
     private var hasRequestedAccessibility = false
+    private var didWakeObserver: NSObjectProtocol?
 
     init(
         store: SessionStore,
@@ -21,6 +25,40 @@ final class SessionLauncherService: ObservableObject {
         self.windowManager = windowManager
         self.hostRegistry = hostRegistry
         self.dockController = dockController
+        installWakeReattach()
+    }
+
+    deinit {
+        if let token = didWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(token)
+        }
+    }
+
+    /// Subscribes to NSWorkspace.didWake. macOS fires spurious AX
+    /// destroy notifications during sleep/wake — DockController's
+    /// destroy handler already defers and re-checks each one against
+    /// WindowServer, but that's per-window and reactive. This is the
+    /// proactive complement: after every wake, walk every running
+    /// session and run the same reattach path the hub uses at launch.
+    /// Idempotent for sessions whose bindings are still good
+    /// (`dockController.dock` no-ops when the session is already
+    /// docked); re-binds + re-docks anything that fell out during
+    /// sleep. The 1s settle delay lets WindowServer finish
+    /// re-registering windows before AX queries hit it — querying too
+    /// early returns stale results.
+    private func installWakeReattach() {
+        didWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self else { return }
+                launcherLog.notice("System wake — re-validating docked sessions via reattachAll")
+                await self.reattachAll()
+            }
+        }
     }
 
     /// Checks Accessibility access and either returns true (proceed) or

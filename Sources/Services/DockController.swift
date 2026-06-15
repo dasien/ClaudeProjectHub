@@ -1,6 +1,9 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import os.log
+
+private let dockLog = Logger(subsystem: "com.bgentry.ClaudeProjectHub", category: "Dock")
 
 /// Owns the set of docked sessions and pins their host windows to the
 /// hub's dock rectangle via AX. Drives layout updates, raises the
@@ -443,6 +446,18 @@ final class DockController: ObservableObject {
         tabIDsBySession[sessionID] = tabID
     }
 
+    /// True iff this docked session has a known controlling-tty
+    /// identifier for routing per-tab AppleScript switches.
+    /// SessionLifecycleMonitor consults this each poll cycle and
+    /// re-derives the tty if it's missing — catches the race where
+    /// `ProcessTree.controllingTTY(of:)` returned nil at launch
+    /// (before the kernel had assigned a tty to the new claude
+    /// process) and the tab routing would otherwise be broken
+    /// forever.
+    func hasTabID(forSession sessionID: Session.ID) -> Bool {
+        tabIDsBySession[sessionID] != nil
+    }
+
     /// Switches the active tab. Raises the new active window via AX
     /// (without activating the host app) so it lands on top of any
     /// other docked windows in the same rect. Repositions the new
@@ -797,13 +812,44 @@ final class DockController: ObservableObject {
     }
 
     private func handleDestroyEvent(_ event: AXObserver.Event) {
-        // The element is gone — can't query CGWindowID anymore. Find
-        // the session by scanning the cached AXUIElements. CFEqual
-        // works on AX refs even after destruction (compares identity).
-        // Don't try to restore the frame on a destroyed window —
-        // there's nothing to set.
-        if let sessionID = sessionID(for: event.element) {
-            undock(sessionID: sessionID, restoreFrame: false)
+        // The AXUIElement is reported destroyed — can't query CGWindowID
+        // from the ref anymore. Find the session by scanning the cached
+        // AXUIElements; CFEqual works on AX refs even after destruction
+        // (it's an identity compare).
+        guard let sessionID = sessionID(for: event.element) else { return }
+
+        // macOS fires spurious destroy events during sleep/wake, display
+        // reconfiguration, screen lock, and other transients — the AX
+        // server reissues window refs and the old ones get reported as
+        // destroyed before the new ones settle. Defer the undock and
+        // re-validate via CGWindowListCopyWindowInfo against the cached
+        // CGWindowID: if WindowServer still has the window, the destroy
+        // was spurious and we leave the binding alone. If it's actually
+        // gone, follow through. 500ms is well past any sleep/wake
+        // re-registration flutter without being noticeable for genuine
+        // close events.
+        let cachedID = cgIDsBySession[sessionID]
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard let self else { return }
+            if let cachedID, Self.windowExists(cgID: cachedID) {
+                dockLog.notice("Suppressed spurious destroy event for cgID \(cachedID, privacy: .public) — window still in WindowServer's list")
+                return
+            }
+            self.undock(sessionID: sessionID, restoreFrame: false)
         }
+    }
+
+    /// Asks WindowServer (not the AX layer) whether a window with this
+    /// CGWindowID currently exists. Used to suppress spurious AX
+    /// destroy notifications. Authoritative source is WindowServer's
+    /// own window list — AX is the layer that goes briefly confused
+    /// during sleep/wake; CGWindowListCopyWindowInfo is not.
+    private static func windowExists(cgID: CGWindowID) -> Bool {
+        guard let list = CGWindowListCopyWindowInfo(
+            [.optionIncludingWindow],
+            cgID
+        ) as? [[String: Any]] else { return false }
+        return list.contains { ($0[kCGWindowNumber as String] as? CGWindowID) == cgID }
     }
 }

@@ -25,13 +25,23 @@ final class WindowManager: ObservableObject {
         return AXSupport.windowID(of: window)
     }
 
-    func focus(_ sessionID: Session.ID) {
-        guard let window = bindings[sessionID] else { return }
+    @discardableResult
+    func focus(_ sessionID: Session.ID) -> Bool {
+        guard let window = bindings[sessionID] else { return false }
         if let pid = AXSupport.pid(of: window),
            let app = NSRunningApplication(processIdentifier: pid) {
             app.activate()
         }
-        AXSupport.raise(window)
+        // raise returns false only when the element is dangling
+        // (probe failed). Drop the binding so subsequent focus()
+        // calls don't keep waking the dead. The session record's
+        // hostWindowID survives for now — a future rediscovery via
+        // pid/HostWindowResolver could reattach.
+        if AXSupport.raise(window) {
+            return true
+        }
+        bindings.removeValue(forKey: sessionID)
+        return false
     }
 
     /// Best-effort: presses the host window's close button (if AX exposes

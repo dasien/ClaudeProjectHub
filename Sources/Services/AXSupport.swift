@@ -1,5 +1,8 @@
 import AppKit
 import ApplicationServices
+import os.log
+
+private let log = Logger(subsystem: "com.bgentry.ClaudeProjectHub", category: "AX")
 
 // Private accessibility function: maps an AXUIElement (window) to its
 // CGWindowID. Stable across macOS versions, widely used by window-management
@@ -110,6 +113,21 @@ enum AXSupport {
         return CGRect(origin: origin, size: size)
     }
 
+    /// Cheap "is this AX element still backed by a live window" probe.
+    /// A single attribute read against `kAXRoleAttribute` — present on
+    /// every AX element, so `.success` means the element is responsive
+    /// and any other return code means the window has been destroyed
+    /// or the host app has gone away. Callers use this (directly or
+    /// indirectly via `raise(_:)`'s return value) to drop bindings
+    /// that have become dangling, since AX writes against a dangling
+    /// element silently no-op and previously left the hub
+    /// unresponsive on selection.
+    static func elementIsLive(_ element: AXUIElement) -> Bool {
+        var value: AnyObject?
+        let err = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value)
+        return err == .success
+    }
+
     /// Brings a window to the front of its app's window stack.
     ///
     /// We set `AXMain` and `AXFocused` before calling `AXRaise` because
@@ -120,10 +138,27 @@ enum AXSupport {
     /// which window we want as primary, so it sticks. Native AppKit apps
     /// either already have these attributes set correctly or accept the
     /// write as a no-op.
-    static func raise(_ element: AXUIElement) {
-        AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
-        AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+    ///
+    /// Returns false ONLY when the liveness probe fails — i.e. the
+    /// element is dangling and callers should drop their binding. If
+    /// the probe passes but individual writes return non-success
+    /// (JBR's AX is famously flaky), we log and still return true; on
+    /// those hosts the writes routinely report errors yet the raise
+    /// itself works, and treating that as failure would cause healthy
+    /// bindings to be discarded.
+    @discardableResult
+    static func raise(_ element: AXUIElement) -> Bool {
+        guard elementIsLive(element) else {
+            log.error("AXSupport.raise: element is dangling; skipping writes")
+            return false
+        }
+        let mainErr = AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        let focusErr = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        let raiseErr = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+        if mainErr != .success || focusErr != .success || raiseErr != .success {
+            log.notice("AXSupport.raise: writes returned non-success (AXMain=\(mainErr.rawValue, privacy: .public) AXFocused=\(focusErr.rawValue, privacy: .public) AXRaise=\(raiseErr.rawValue, privacy: .public)); proceeding")
+        }
+        return true
     }
 
     /// Sets `kAXMinimizedAttribute` on a window. `true` minimizes it

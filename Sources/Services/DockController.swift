@@ -548,8 +548,15 @@ final class DockController: ObservableObject {
            let app = NSRunningApplication(processIdentifier: pid) {
             app.activate()
         }
-        AXSupport.raise(element)
-        selectActiveTab()
+        if AXSupport.raise(element) {
+            selectActiveTab()
+        } else {
+            // Probe failed → element is dangling. Same cleanup path
+            // the AX destroy-notification handler uses; the binding's
+            // gone for the same reason, just detected at use time
+            // instead of via the AX observer.
+            undock(sessionID: id, restoreFrame: false)
+        }
     }
 
     /// Raises the active window without activating its app. Used after
@@ -569,8 +576,12 @@ final class DockController: ObservableObject {
         // See raiseActive for the rationale — minimized sessions get
         // skipped so we don't un-hide the user's hidden window.
         guard !minimizedSessionIDs.contains(id) else { return }
-        AXSupport.raise(element)
-        if syncTab { selectActiveTab() }
+        if AXSupport.raise(element) {
+            if syncTab { selectActiveTab() }
+        } else {
+            // Dangling element — same cleanup as the destroy handler.
+            undock(sessionID: id, restoreFrame: false)
+        }
     }
 
     /// Asks the host to switch its internal tab to match the active

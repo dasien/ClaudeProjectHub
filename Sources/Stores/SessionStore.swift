@@ -88,14 +88,18 @@ final class SessionStore: ObservableObject {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let decoded = try? decoder.decode([Session].self, from: data) else { return }
-        // Transient AX bindings don't survive a hub restart. The pid does
-        // — if the underlying claude process is still alive, the session
-        // is still running and `SessionLauncherService.reattachAll()` will
-        // re-bind its host window after launch. If the process is dead,
-        // mark the session closed and clear the stale pid.
+        // Transient AX bindings don't survive a hub restart. The pid does,
+        // and so does hostWindowID — the latter is just a CGWindowID
+        // number, not an AX element, so it can be used as a recovery
+        // breadcrumb in `reattachAll()`: if a window with that id still
+        // exists in the host's AX list, we re-bind to exactly the right
+        // window instead of falling back to "first window of the host"
+        // and possibly cross-wiring sessions. Stale ids are filtered
+        // out by `AXSupport.findWindow(matching:in:)` returning nil.
+        // Closed sessions clear their hostWindowID — no window means
+        // no recovery target.
         sessions = decoded.map { stored in
             var s = stored
-            s.hostWindowID = nil
             if s.status.isRunning {
                 if let pid = s.pid, SessionStore.pidIsAlive(pid) {
                     // Status is reset to .idle; lifecycle monitor will
@@ -104,7 +108,10 @@ final class SessionStore: ObservableObject {
                 } else {
                     s.pid = nil
                     s.status = .closed
+                    s.hostWindowID = nil
                 }
+            } else {
+                s.hostWindowID = nil
             }
             return s
         }

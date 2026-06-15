@@ -236,9 +236,24 @@ final class SessionLauncherService: ObservableObject {
             return false
         }
 
+        // Lookup order:
+        //   1. Persisted Session.hostWindowID — the breadcrumb from the
+        //      last successful bind. Synchronous probe (no polling) so
+        //      a stale id doesn't burn 3s before falling through.
+        //   2. match.cgWindowID — freshly resolved by HostWindowResolver
+        //      via the claude process's controlling tty. Only set for
+        //      tty-routable hosts (iTerm2, Terminal).
+        //   3. The host app's focused window, then its first window —
+        //      last resort. May cross-wire to a sibling's window if the
+        //      user has multiple windows in the same host; this is the
+        //      "wrong window after restart" failure mode we're guarding
+        //      against by trying (1) first.
         let window: AXUIElement
-        if let cgID = match.cgWindowID,
-           let exact = await AXSupport.waitForWindow(matching: cgID, in: match.hostAppPID) {
+        if let preferredID = session.hostWindowID,
+           let exact = AXSupport.findWindow(matching: preferredID, in: match.hostAppPID) {
+            window = exact
+        } else if let cgID = match.cgWindowID,
+                  let exact = await AXSupport.waitForWindow(matching: cgID, in: match.hostAppPID) {
             window = exact
         } else if let fallback = focusedWindow(of: match.hostAppPID)
                 ?? AXSupport.windows(of: match.hostAppPID).first {
@@ -247,11 +262,12 @@ final class SessionLauncherService: ObservableObject {
             store.update(id: session.id) {
                 $0.status = .closed
                 $0.pid = nil
+                $0.hostWindowID = nil
             }
             return false
         }
 
-        windowManager.bind(window, to: session.id)
+        bindAndPersist(window: window, to: session.id)
         dockController.dock(
             window: window,
             sessionID: session.id,
@@ -347,7 +363,7 @@ final class SessionLauncherService: ObservableObject {
             $0.claudeSessionId = external.claudeSessionId
             $0.pid = external.pid
         }
-        windowManager.bind(window, to: session.id)
+        bindAndPersist(window: window, to: session.id)
         dockController.dock(
             window: window,
             sessionID: session.id,
@@ -356,6 +372,20 @@ final class SessionLauncherService: ObservableObject {
         )
         store.selectedSessionID = session.id
         return true
+    }
+
+    /// Binds the window in WindowManager and mirrors its CGWindowID
+    /// into the persisted Session record. The CGWindowID is the
+    /// recovery breadcrumb used by `reattach(_:)` after a hub restart:
+    /// transient AX bindings don't survive the restart, but the
+    /// underlying window does, and `Session.hostWindowID` lets us
+    /// find it again without falling back to the host's "first
+    /// window" — which would cross-wire to a sibling session if the
+    /// user has multiple windows in the same host.
+    private func bindAndPersist(window: AXUIElement, to sessionID: Session.ID) {
+        windowManager.bind(window, to: sessionID)
+        let windowID = AXSupport.windowID(of: window)
+        store.update(id: sessionID) { $0.hostWindowID = windowID }
     }
 
     /// Returns the AX-focused window of the given app, or nil if AX
@@ -411,7 +441,7 @@ final class SessionLauncherService: ObservableObject {
             return
         }
 
-        windowManager.bind(window, to: sessionID)
+        bindAndPersist(window: window, to: sessionID)
         // Auto-dock newly-launched sessions. The DockController writes
         // the AX frame into the hub's dock rectangle and pins it there.
         // tabID is filled in below once we've identified the claude

@@ -47,6 +47,7 @@ final class SessionLifecycleMonitor: ObservableObject {
         store.update(id: sessionID) {
             $0.status = .closed
             $0.pid = nil
+            $0.hostWindowID = nil
             $0.lastActivityAt = Date()
         }
     }
@@ -77,6 +78,7 @@ final class SessionLifecycleMonitor: ObservableObject {
                 store.update(id: session.id) {
                     $0.status = .closed
                     $0.pid = nil
+                    $0.hostWindowID = nil
                     $0.lastActivityAt = Date()
                 }
                 windowManager.unbind(session.id)

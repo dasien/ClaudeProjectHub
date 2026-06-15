@@ -253,6 +253,19 @@ enum AXSupport {
         return nil
     }
 
+    /// Single-shot variant of `waitForWindow(matching:in:)` — no polling,
+    /// returns immediately whether or not the window exists right now.
+    /// Use this when probing a persisted CGWindowID at reattach time:
+    /// if the window survived the hub restart it's already in the host's
+    /// AX window list, and burning the 3s polling timeout when it isn't
+    /// would slow the happy path.
+    static func findWindow(matching cgID: CGWindowID, in pid: pid_t) -> AXUIElement? {
+        for window in windows(of: pid) where windowID(of: window) == cgID {
+            return window
+        }
+        return nil
+    }
+
     /// Polls for a window of the given app PID whose CGWindowID matches the
     /// supplied id. Used when the host has told us the id directly (e.g.
     /// iTerm2's AppleScript returns `id of current window`, which IS the

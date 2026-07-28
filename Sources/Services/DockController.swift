@@ -77,6 +77,17 @@ final class DockController: ObservableObject {
     /// tied to NSApp, not to a specific window.
     private var hubWillHideObserver: NSObjectProtocol?
     private var hubDidUnhideObserver: NSObjectProtocol?
+    /// Token for `NSApplication.didChangeScreenParametersNotification`.
+    /// Fires on every display reconfig event (monitor connect/disconnect,
+    /// resolution change, lid close/open with an external monitor
+    /// attached). Multiple events fire for one user action — coalesced
+    /// via `screenChangeSettleTask`.
+    private var screenParametersObserver: NSObjectProtocol?
+    /// Debounce token for screen-parameter changes — display reconfig
+    /// posts several notifications in quick succession (monitor connect
+    /// is typically 3-5 events), so we wait ~400ms after the last one
+    /// before doing the re-pin pass.
+    private var screenChangeSettleTask: Task<Void, Never>?
     /// Sessions the hub itself minimized as part of a hub-window
     /// minimize. Used so a hub-restore only un-minimizes the ones
     /// the *hub* hid, not sessions the user had individually
@@ -180,6 +191,22 @@ final class DockController: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.handleHubDidDeminiaturize() }
         }
+
+        // Re-pin docked sessions after any display reconfiguration —
+        // monitor (un)plug, resolution change, lid open/close while an
+        // external monitor is attached. macOS migrates windows between
+        // screens during these events; the foreign window's frame can
+        // end up wherever macOS decided, not where our dock rect is
+        // now. We coalesce the burst of notifications via
+        // `scheduleScreenChangeSettle` and reposition on the trailing
+        // edge.
+        screenParametersObserver = appCenter.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.scheduleScreenChangeSettle() }
+        }
     }
 
     deinit {
@@ -201,6 +228,9 @@ final class DockController: ObservableObject {
             center.removeObserver(observer)
         }
         if let observer = hubDidUnhideObserver {
+            center.removeObserver(observer)
+        }
+        if let observer = screenParametersObserver {
             center.removeObserver(observer)
         }
         let workspaceCenter = NSWorkspace.shared.notificationCenter
@@ -520,12 +550,53 @@ final class DockController: ObservableObject {
     }
 
     /// Reposition every docked tab. Slow path; called from settle
-    /// (when the hub stops moving) and from dock(). Inactive tabs
-    /// catch up to the current dockRect here.
+    /// (when the hub stops moving), from dock(), and after a debounced
+    /// display reconfiguration event. Inactive tabs catch up to the
+    /// current dockRect here.
     private func repositionAll() {
         for id in dockedSessionIDs {
             repositionOne(id)
         }
+    }
+
+    /// Debounce for `didChangeScreenParametersNotification`. Display
+    /// reconfig fires several notifications for one user action — e.g.
+    /// plugging in an external monitor typically posts 3-5 events
+    /// across ~200ms as the OS goes through "begin configuration / set
+    /// main display / end configuration." Coalesce them and only run
+    /// the re-pin pass after the dust settles.
+    private func scheduleScreenChangeSettle() {
+        screenChangeSettleTask?.cancel()
+        screenChangeSettleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.handleScreenParametersChanged()
+        }
+    }
+
+    /// Re-pin every docked session to the current dock rect after a
+    /// display reconfiguration. macOS migrates foreign windows between
+    /// screens on monitor (un)plug and lid open/close-with-external;
+    /// without this pass they end up wherever the OS put them rather
+    /// than back inside the hub's dock area. Dangling AX elements —
+    /// which can briefly appear during the reconfig — get undocked,
+    /// matching the destroy-event cleanup path.
+    private func handleScreenParametersChanged() {
+        guard !dockedSessionIDs.isEmpty else { return }
+        dockLog.notice("Display configuration changed — validating + re-pinning \(self.dockedSessionIDs.count, privacy: .public) docked session(s)")
+        // Collect dangling first so we don't mutate dockedSessionIDs
+        // while iterating.
+        var dangling: [Session.ID] = []
+        for id in dockedSessionIDs {
+            guard let element = bindings[id] else { continue }
+            if !AXSupport.elementIsLive(element) {
+                dangling.append(id)
+            }
+        }
+        for id in dangling {
+            undock(sessionID: id, restoreFrame: false)
+        }
+        repositionAll()
     }
 
     private func repositionOne(_ id: Session.ID) {
@@ -811,12 +882,27 @@ final class DockController: ObservableObject {
         })?.key
     }
 
+    /// Every session bound to this AX element. Multiple matches happen
+    /// when sibling sessions share one host window — most commonly
+    /// iTerm2/Terminal tabs, where every tab in one window shares the
+    /// same AXUIElement. Single-match callers (geometry/minimize) can
+    /// stay on `sessionID(for:)`; `handleDestroyEvent` must use this
+    /// plural form, otherwise only one of the tab-sharing siblings gets
+    /// undocked when the shared window dies and the survivor lingers
+    /// in `dockedSessionIDs` as a zombie with a dangling AX binding.
+    private func sessionIDs(for element: AXUIElement) -> [Session.ID] {
+        bindings.compactMap { id, candidate in
+            CFEqual(candidate, element) ? id : nil
+        }
+    }
+
     private func handleDestroyEvent(_ event: AXObserver.Event) {
         // The AXUIElement is reported destroyed — can't query CGWindowID
-        // from the ref anymore. Find the session by scanning the cached
-        // AXUIElements; CFEqual works on AX refs even after destruction
-        // (it's an identity compare).
-        guard let sessionID = sessionID(for: event.element) else { return }
+        // from the ref anymore. Find every session bound to this element
+        // (CFEqual works on AX refs even after destruction — it's an
+        // identity compare). N>1 happens for tab-sharing siblings.
+        let affected = sessionIDs(for: event.element)
+        guard !affected.isEmpty else { return }
 
         // macOS fires spurious destroy events during sleep/wake, display
         // reconfiguration, screen lock, and other transients — the AX
@@ -824,11 +910,11 @@ final class DockController: ObservableObject {
         // destroyed before the new ones settle. Defer the undock and
         // re-validate via CGWindowListCopyWindowInfo against the cached
         // CGWindowID: if WindowServer still has the window, the destroy
-        // was spurious and we leave the binding alone. If it's actually
-        // gone, follow through. 500ms is well past any sleep/wake
-        // re-registration flutter without being noticeable for genuine
-        // close events.
-        let cachedID = cgIDsBySession[sessionID]
+        // was spurious and we leave the bindings alone. If it's actually
+        // gone, follow through for every affected session. 500ms is well
+        // past any sleep/wake re-registration flutter without being
+        // noticeable for genuine close events.
+        let cachedID = affected.compactMap { cgIDsBySession[$0] }.first
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 500_000_000)
             guard let self else { return }
@@ -836,7 +922,10 @@ final class DockController: ObservableObject {
                 dockLog.notice("Suppressed spurious destroy event for cgID \(cachedID, privacy: .public) — window still in WindowServer's list")
                 return
             }
-            self.undock(sessionID: sessionID, restoreFrame: false)
+            dockLog.notice("Destroy confirmed — undocking \(affected.count, privacy: .public) session(s) bound to the destroyed window")
+            for id in affected {
+                self.undock(sessionID: id, restoreFrame: false)
+            }
         }
     }
 

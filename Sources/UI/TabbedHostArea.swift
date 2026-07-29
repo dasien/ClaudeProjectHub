@@ -6,8 +6,22 @@ struct TabbedHostArea: View {
     @EnvironmentObject private var hostRegistry: HostRegistry
     @EnvironmentObject private var dockController: DockController
 
+    /// Sessions that get a tab: running *and* still backed by a window.
+    ///
+    /// The window check matters because a claude process can outlive its
+    /// host window by several seconds (iTerm2 tears the session down, then
+    /// claude does its own SIGHUP cleanup). Filtering on `status.isRunning`
+    /// alone left a tab sitting there through that gap — and a tab whose
+    /// window is gone is a broken affordance, since clicking it can't show
+    /// or raise anything. The sidebar row is the right place to represent
+    /// "process still alive"; it keeps showing the session until the pid
+    /// actually exits.
     private var runningSessions: [Session] {
-        store.sessions.filter { $0.status.isRunning }
+        store.sessions.filter { session in
+            guard session.status.isRunning else { return false }
+            return dockController.dockedSessionIDs.contains(session.id)
+                || windowManager.boundSessionIDs.contains(session.id)
+        }
     }
 
     /// Inset between the dock area and the hub window's right/bottom

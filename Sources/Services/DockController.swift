@@ -132,9 +132,15 @@ final class DockController: ObservableObject {
     /// sibling and need to propagate that to the SwiftUI selection so
     /// the sidebar/tabs follow. Injected at app launch.
     private let store: SessionStore
+    /// Needed so a confirmed window destroy can release the session's
+    /// WindowManager binding too — the AX element is dead, and the tab
+    /// bar keys off `WindowManager.boundSessionIDs` to decide whether a
+    /// session still has a window worth showing a tab for.
+    private let windowManager: WindowManager
 
-    init(store: SessionStore) {
+    init(store: SessionStore, windowManager: WindowManager) {
         self.store = store
+        self.windowManager = windowManager
         // Re-raise the active docked window when the hub regains focus
         // after the user switched away to another app. Without this the
         // docked window can end up below other apps' windows in z-order
@@ -1010,6 +1016,13 @@ final class DockController: ObservableObject {
             dockLog.notice("Destroy confirmed — undocking \(affected.count, privacy: .public) session(s) bound to the destroyed window")
             for id in affected {
                 self.undock(sessionID: id, restoreFrame: false)
+                // Release the WindowManager binding too. The element is
+                // dead, so holding it only produces failed raises — and
+                // the tab bar keys off boundSessionIDs to drop the tab
+                // for a session that no longer has a window, rather than
+                // waiting for the claude process to exit (which can lag
+                // the window close by several seconds).
+                self.windowManager.unbind(id)
             }
         }
     }

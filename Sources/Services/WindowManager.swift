@@ -6,7 +6,17 @@ import ApplicationServices
 /// pulled out — it's tracked as a future feature in MEMORY.
 @MainActor
 final class WindowManager: ObservableObject {
-    private var bindings: [Session.ID: AXUIElement] = [:]
+    /// Sessions that currently have a window bound. Published so SwiftUI
+    /// can drive off "does this session have a window to show" — the tab
+    /// bar uses it, because a tab whose window has been destroyed is a
+    /// broken affordance (clicking it can't do anything) even while the
+    /// claude process is still alive. Kept in sync via `didSet` on
+    /// `bindings` so no mutation site can forget to update it.
+    @Published private(set) var boundSessionIDs: Set<Session.ID> = []
+
+    private var bindings: [Session.ID: AXUIElement] = [:] {
+        didSet { boundSessionIDs = Set(bindings.keys) }
+    }
 
     func bind(_ window: AXUIElement, to sessionID: Session.ID) {
         bindings[sessionID] = window

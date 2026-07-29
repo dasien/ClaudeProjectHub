@@ -1,5 +1,6 @@
 import Combine
 import Darwin
+import Dispatch
 import Foundation
 import os.log
 
@@ -8,11 +9,18 @@ private let log = Logger(subsystem: "com.bgentry.ClaudeProjectHub", category: "L
 /// Watches each running session's `claude` process and the per-process
 /// metadata file Claude writes at `~/.claude/sessions/<pid>.json`.
 ///
-/// On each poll cycle:
-/// - If the PID has exited, flip the session to `.closed`.
-/// - Otherwise read the sessions file: if its `status` is "busy", treat the
-///   session as `.working`; otherwise `.idle`. Mirror Claude's `updatedAt`
-///   into our `lastActivityAt` so the sidebar timer reflects real activity.
+/// Process death is **event-driven**: one `DispatchSourceProcess` per
+/// running session (kqueue `EVFILT_PROC` / `NOTE_EXIT` underneath)
+/// fires the moment the pid exits, so the session flips to `.closed`
+/// immediately. This matters for perceived responsiveness — the tab bar
+/// and sidebar "inactive" state are driven by `status.isRunning`, so
+/// before this they lagged the actual window closing by up to a full
+/// poll interval.
+///
+/// The 2s poll remains for the things that genuinely need sampling:
+/// - busy/idle refinement from the per-pid sessions file (no event for it)
+/// - re-deriving a missing `tabID` (launch-time tty race)
+/// - a liveness backstop, in case a watcher failed to install
 ///
 /// Also exposes an explicit `close` for the right-click action.
 @MainActor
@@ -22,6 +30,11 @@ final class SessionLifecycleMonitor: ObservableObject {
     private let dockController: DockController
     private var monitorTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
+    /// One exit watcher per running session. Keyed by session id and
+    /// tagged with the pid it watches so a session that comes back on a
+    /// *different* pid (reconcile promoting a stale-closed record) gets
+    /// its watcher rebuilt rather than silently watching a dead pid.
+    private var exitWatchers: [Session.ID: (pid: pid_t, source: DispatchSourceProcess)] = [:]
 
     init(store: SessionStore, windowManager: WindowManager, dockController: DockController) {
         self.store = store
@@ -30,8 +43,8 @@ final class SessionLifecycleMonitor: ObservableObject {
     }
 
     /// Subscribes to session changes; starts polling when any session is
-    /// running and stops when none are. Idempotent — safe to call once at app
-    /// launch.
+    /// running and stops when none are, and keeps the per-process exit
+    /// watchers in sync. Idempotent — safe to call once at app launch.
     func start() {
         guard cancellables.isEmpty else { return }
         store.$sessions
@@ -45,6 +58,74 @@ final class SessionLifecycleMonitor: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+
+        // Separate subscription (no removeDuplicates) because watchers
+        // track *which* pids are running, not just whether any are.
+        // Deferred via Task so we read committed state — @Published
+        // fires on willSet, and syncExitWatchers can itself mutate the
+        // store when it finds a pid that already exited.
+        store.$sessions
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.syncExitWatchers() }
+            }
+            .store(in: &cancellables)
+        syncExitWatchers()
+    }
+
+    /// Creates/tears down exit watchers so they exactly match the set of
+    /// running sessions that have a pid.
+    private func syncExitWatchers() {
+        var wanted: [Session.ID: pid_t] = [:]
+        for session in store.sessions where session.status.isRunning {
+            if let pid = session.pid { wanted[session.id] = pid }
+        }
+
+        // Drop watchers whose session stopped running or changed pid.
+        for (id, existing) in exitWatchers where wanted[id] != existing.pid {
+            existing.source.cancel()
+            exitWatchers.removeValue(forKey: id)
+        }
+
+        for (id, pid) in wanted where exitWatchers[id] == nil {
+            // A source created against an already-dead pid may never
+            // fire, so handle that synchronously instead of installing a
+            // watcher that would wait forever.
+            guard kill(pid, 0) == 0 || errno == EPERM else {
+                markClosed(sessionID: id, reason: "pid \(pid) had already exited")
+                continue
+            }
+            let source = DispatchSource.makeProcessSource(
+                identifier: pid,
+                eventMask: .exit,
+                queue: .main
+            )
+            source.setEventHandler { [weak self] in
+                Task { @MainActor in
+                    self?.markClosed(sessionID: id, reason: "process \(pid) exited")
+                }
+            }
+            source.resume()
+            exitWatchers[id] = (pid: pid, source: source)
+        }
+    }
+
+    /// Flips a session to `.closed` and releases what it held. Idempotent
+    /// — guards on the session still being running, so the poll backstop
+    /// and the exit watcher racing each other is harmless.
+    private func markClosed(sessionID: Session.ID, reason: String) {
+        guard let session = store.sessions.first(where: { $0.id == sessionID }),
+              session.status.isRunning else { return }
+        log.notice("Session \(sessionID, privacy: .public) → closed: \(reason, privacy: .public)")
+        store.update(id: sessionID) {
+            $0.status = .closed
+            $0.pid = nil
+            $0.hostWindowID = nil
+            $0.lastActivityAt = Date()
+        }
+        windowManager.unbind(sessionID)
+        if let existing = exitWatchers.removeValue(forKey: sessionID) {
+            existing.source.cancel()
+        }
     }
 
     func close(_ sessionID: Session.ID) {
@@ -76,17 +157,14 @@ final class SessionLifecycleMonitor: ObservableObject {
         for session in store.sessions where session.status.isRunning {
             guard let pid = session.pid else { continue }
 
+            // Liveness backstop. The per-session DispatchSourceProcess
+            // watcher normally reports the exit immediately; this only
+            // catches a session whose watcher failed to install.
             // kill(pid, 0) is the canonical "is this PID alive" check: it
             // performs error checking but sends no signal. Returns 0 if the
             // process exists, -1 (errno = ESRCH) if not.
             if kill(pid, 0) != 0 {
-                store.update(id: session.id) {
-                    $0.status = .closed
-                    $0.pid = nil
-                    $0.hostWindowID = nil
-                    $0.lastActivityAt = Date()
-                }
-                windowManager.unbind(session.id)
+                markClosed(sessionID: session.id, reason: "pid \(pid) gone (detected by poll backstop)")
                 continue
             }
 

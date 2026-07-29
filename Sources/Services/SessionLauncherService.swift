@@ -14,6 +14,12 @@ final class SessionLauncherService: ObservableObject {
     private let dockController: DockController
     private var hasRequestedAccessibility = false
     private var didWakeObserver: NSObjectProtocol?
+    private var didBecomeActiveObserver: NSObjectProtocol?
+    /// Re-entrancy guard for the activation-driven reconcile. Hub
+    /// activation fires on every app switch back to the hub; the
+    /// reconcile itself is cheap but the reattach sweep it can trigger
+    /// is async, and overlapping sweeps would fight each other.
+    private var isReconciling = false
 
     init(
         store: SessionStore,
@@ -26,11 +32,15 @@ final class SessionLauncherService: ObservableObject {
         self.hostRegistry = hostRegistry
         self.dockController = dockController
         installWakeReattach()
+        installHubActivationReconcile()
     }
 
     deinit {
         if let token = didWakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(token)
+        }
+        if let token = didBecomeActiveObserver {
+            NotificationCenter.default.removeObserver(token)
         }
     }
 
@@ -58,6 +68,54 @@ final class SessionLauncherService: ObservableObject {
                 launcherLog.notice("System wake — re-validating docked sessions via reattachAll")
                 await self.reattachAll()
             }
+        }
+    }
+
+    /// Reconcile stale-closed sessions whenever the hub becomes
+    /// frontmost.
+    ///
+    /// The case this exists for: the user runs `claude --resume <id>`
+    /// in a terminal themselves, outside the hub. The hub's record for
+    /// that conversation still says `.closed`, and
+    /// `ExternalSessionScanner` deliberately skips the live process
+    /// because its sessionId *is* already tracked — so the session
+    /// falls into a gap, seen by one component and disowned by the
+    /// other. Reconciling on activation catches it in the natural
+    /// flow: resume in the terminal, switch to the hub, it's correct.
+    ///
+    /// Deliberately event-driven with no polling timer. Every path that
+    /// produces a stale-closed record is already an event we observe:
+    /// external resume → hub activation (here); spurious close during
+    /// sleep/wake → `didWakeNotification`; hub restart → startup
+    /// `reattachAll`. The only uncovered case is a session going
+    /// stale-closed while the hub sits visible but never activated on
+    /// another display, which self-heals the moment the user clicks it.
+    private func installHubActivationReconcile() {
+        didBecomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.reconcileAndReattachPromoted()
+            }
+        }
+    }
+
+    /// Runs the stale-closed reconcile and reattaches only the records
+    /// it actually promoted. Cheap when there's nothing to do — the
+    /// reconcile is a few small JSON reads and returns an empty array,
+    /// so the common "user switched back to the hub" case does no work.
+    private func reconcileAndReattachPromoted() async {
+        guard !isReconciling else { return }
+        isReconciling = true
+        defer { isReconciling = false }
+
+        let promoted = reconcileStaleClosedSessions()
+        guard !promoted.isEmpty else { return }
+        for id in promoted {
+            guard let session = store.sessions.first(where: { $0.id == id }) else { continue }
+            await reattach(session)
         }
     }
 
@@ -279,9 +337,20 @@ final class SessionLauncherService: ObservableObject {
     ///      wake, lifecycle poll false-positive) but the claude
     ///      process actually survived.
     ///   2. User externally ran `claude --resume <id>` after the hub
-    ///      had marked the record closed — new pid, same claudeSessionId,
-    ///      hub had no way to know.
-    private func reconcileStaleClosedSessions() {
+    ///      had marked the record closed. Verified empirically on claude
+    ///      2.1.197: the resumed process's per-pid `sessionId` IS the
+    ///      conversation id, so it matches the stored
+    ///      `claudeSessionId` and this lookup finds it. (Note this
+    ///      qualifies the "claude --resume does NOT reuse the
+    ///      sessionId" lesson in CLAUDE.md, which describes the
+    ///      *conversation* JSONL vs *process* id distinction — on
+    ///      current versions the per-pid file reports the conversation
+    ///      id.)
+    ///
+    /// - Returns: ids of the sessions promoted, so callers can reattach
+    ///   just those rather than sweeping everything.
+    @discardableResult
+    private func reconcileStaleClosedSessions() -> [Session.ID] {
         // Build sessionId → live pid map. Filter to interactive/cli
         // like ExternalSessionScanner does; background / plugin
         // sessions can share sessionIds with interactive ones in some
@@ -293,8 +362,9 @@ final class SessionLauncherService: ObservableObject {
             if let entry = file.entrypoint, entry != "cli" { continue }
             livePIDBySessionId[file.sessionId] = pid_t(pid)
         }
-        guard !livePIDBySessionId.isEmpty else { return }
+        guard !livePIDBySessionId.isEmpty else { return [] }
 
+        var promoted: [Session.ID] = []
         for session in store.sessions
             where session.status == .closed
             && session.claudeSessionId != nil {
@@ -304,8 +374,10 @@ final class SessionLauncherService: ObservableObject {
                 $0.status = .idle
                 $0.pid = pid
             }
+            promoted.append(session.id)
             launcherLog.notice("Reconciled stale-closed session \(session.id, privacy: .public) — claude pid \(pid, privacy: .public) is alive with the same sessionId")
         }
+        return promoted
     }
 
     /// A reattach failure is terminal only if the claude process is
@@ -365,6 +437,16 @@ final class SessionLauncherService: ObservableObject {
         }
 
         bindAndPersist(window: window, to: session.id)
+        // The session may have come back in a different host than the
+        // record remembers — e.g. the record says iTerm2 but the user
+        // resumed the conversation in Terminal. The dock already uses
+        // the freshly-resolved host below; without this the persisted
+        // record keeps the stale hostID and the sidebar shows the wrong
+        // host name and icon.
+        if session.hostID != match.hostID {
+            launcherLog.notice("reattach: session \(session.id, privacy: .public) moved host \(session.hostID, privacy: .public) → \(match.hostID, privacy: .public); updating record")
+            store.update(id: session.id) { $0.hostID = match.hostID }
+        }
         dockController.dock(
             window: window,
             sessionID: session.id,

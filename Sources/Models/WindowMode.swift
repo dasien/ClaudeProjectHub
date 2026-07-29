@@ -1,8 +1,8 @@
 import Foundation
 
 /// How a new session's host window should be created relative to existing
-/// host windows. Currently consumed by `TerminalAppLauncher`; other hosts
-/// can adopt the same enum.
+/// host windows. Substituted into the host's `.applescript` as `{mode}` by
+/// `ScriptedHostLauncher`.
 enum WindowMode: String, Codable, CaseIterable, Identifiable {
     case newWindow
     case newTab
@@ -11,7 +11,10 @@ enum WindowMode: String, Codable, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .newWindow: return "New Terminal window"
+        // Deliberately host-agnostic: the chosen host is already shown in
+        // the dialog's Host dropdown, and "New Terminal window" read as
+        // Terminal.app even when launching iTerm2/VSCode/etc.
+        case .newWindow: return "New window"
         case .newTab: return "New tab in front window"
         }
     }

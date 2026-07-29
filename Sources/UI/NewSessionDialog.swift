@@ -44,8 +44,38 @@ struct NewSessionDialog: View {
             .sorted { $0.lastActivityAt > $1.lastActivityAt }
     }
 
+    /// Distinct host windows of `runningSessions`, grouped by
+    /// `hostWindowID`. The picker uses these instead of raw sessions so
+    /// that N tabs in one iTerm2 window collapse to one row — picking
+    /// any of them produces the same windowID at launch time, and the
+    /// previous per-session listing made the choice look meaningful
+    /// when it wasn't. Each group's `representativeSessionID` is the
+    /// most-recently-active session in the window; the launcher maps
+    /// it back to the same windowID, so behavior is unchanged.
+    private struct WindowGroup: Identifiable {
+        let id: CGWindowID
+        let sessions: [Session]
+        var representativeSessionID: Session.ID { sessions.first!.id }
+        var displayLabel: String {
+            sessions.map(\.displayTitle).joined(separator: ", ")
+        }
+    }
+
+    private var runningWindows: [WindowGroup] {
+        let grouped = Dictionary(grouping: runningSessions) { $0.hostWindowID }
+        return grouped.compactMap { (windowID, sessions) -> WindowGroup? in
+            guard let windowID, !sessions.isEmpty else { return nil }
+            let sorted = sessions.sorted { $0.lastActivityAt > $1.lastActivityAt }
+            return WindowGroup(id: windowID, sessions: sorted)
+        }
+        .sorted {
+            ($0.sessions.first?.lastActivityAt ?? .distantPast)
+                > ($1.sessions.first?.lastActivityAt ?? .distantPast)
+        }
+    }
+
     private var canUseNewTab: Bool {
-        (selectedHost?.supportsNewTab ?? false) && !runningSessions.isEmpty
+        (selectedHost?.supportsNewTab ?? false) && !runningWindows.isEmpty
     }
 
     private var canLaunch: Bool {
@@ -96,7 +126,7 @@ struct NewSessionDialog: View {
                     // that's now invalid, and fall back to .newWindow if
                     // the new host can't use tabs at all.
                     if let target = targetSessionID,
-                       !runningSessions.contains(where: { $0.id == target }) {
+                       !runningWindows.contains(where: { $0.representativeSessionID == target }) {
                         targetSessionID = nil
                     }
                     if windowMode == .newTab, !canUseNewTab {
@@ -104,35 +134,39 @@ struct NewSessionDialog: View {
                     }
                     if windowMode == .newTab,
                        targetSessionID == nil,
-                       runningSessions.count == 1 {
-                        targetSessionID = runningSessions.first?.id
+                       runningWindows.count == 1 {
+                        targetSessionID = runningWindows.first?.representativeSessionID
                     }
                 }
             }
 
             field(label: "Open in") {
                 if isHostRunning {
-                    Picker("", selection: $windowMode) {
-                        Text(WindowMode.newWindow.displayName).tag(WindowMode.newWindow)
-                        if canUseNewTab {
-                            Text("New tab in…").tag(WindowMode.newTab)
-                        }
-                    }
-                    .pickerStyle(.radioGroup)
-                    .labelsHidden()
-                    .onChange(of: windowMode) { _, newMode in
-                        if newMode == .newTab,
-                           targetSessionID == nil,
-                           runningSessions.count == 1 {
-                            targetSessionID = runningSessions.first?.id
-                        }
+                    // Custom radio rows instead of `Picker(.radioGroup)`
+                    // so the "New tab…" option can stay visible-but-
+                    // disabled when the host doesn't support tabs or
+                    // has no existing windows. SwiftUI's radio-group
+                    // Picker doesn't let us disable individual options.
+                    VStack(alignment: .leading, spacing: 6) {
+                        radioOption(
+                            value: .newWindow,
+                            label: WindowMode.newWindow.displayName
+                        )
+                        radioOption(
+                            value: .newTab,
+                            label: "New tab in an existing window…"
+                        )
+                        .disabled(!canUseNewTab)
+                        .opacity(canUseNewTab ? 1.0 : 0.4)
+                        .help(newTabDisabledReason)
                     }
 
                     if windowMode == .newTab {
                         Picker("", selection: $targetSessionID) {
-                            Text("Choose a session…").tag(Session.ID?.none)
-                            ForEach(runningSessions) { session in
-                                Text(session.displayTitle).tag(Session.ID?.some(session.id))
+                            Text("Choose a window…").tag(Session.ID?.none)
+                            ForEach(runningWindows) { window in
+                                Text(window.displayLabel)
+                                    .tag(Session.ID?.some(window.representativeSessionID))
                             }
                         }
                         .pickerStyle(.menu)
@@ -178,6 +212,48 @@ struct NewSessionDialog: View {
             Text(label).font(.subheadline).foregroundStyle(.secondary)
             content()
         }
+    }
+
+    /// One radio row in the Open-in chooser. We build these by hand
+    /// instead of using `Picker(.radioGroup)` so individual options
+    /// can be disabled — the "New tab…" option needs to stay visible
+    /// when the host doesn't support tabs (or has no open windows yet),
+    /// rather than disappearing and shifting the layout around.
+    @ViewBuilder
+    private func radioOption(value: WindowMode, label: String) -> some View {
+        Button {
+            windowMode = value
+            // Same auto-pick the previous Picker.onChange did: if the
+            // user flips to newTab and there's exactly one candidate
+            // window, pre-select it so they don't have to dig into the
+            // dropdown.
+            if value == .newTab,
+               targetSessionID == nil,
+               runningWindows.count == 1 {
+                targetSessionID = runningWindows.first?.representativeSessionID
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: windowMode == value ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(windowMode == value ? Color.accentColor : .secondary)
+                Text(label)
+                    .foregroundStyle(.primary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Help tooltip for the "New tab…" row when it's disabled. Two
+    /// distinct cases worth surfacing: host can't do tabs at all, vs.
+    /// host can but has nothing to add to.
+    private var newTabDisabledReason: String {
+        if canUseNewTab { return "" }
+        let hostName = selectedHost?.displayName ?? "This host"
+        if !(selectedHost?.supportsNewTab ?? false) {
+            return "\(hostName) doesn't support adding a tab to an existing window."
+        }
+        return "No \(hostName) windows are open to add a tab to."
     }
 
     private func browseForDirectory() {

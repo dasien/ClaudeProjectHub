@@ -36,6 +36,19 @@ enum AXSupport {
         return title
     }
 
+    /// The focused window of an application element, or nil if AX can't
+    /// read it or it isn't a genuine window. Role-validated for the
+    /// same reason as elsewhere — during sleep/wake the app element can
+    /// briefly report a non-window for kAXFocusedWindow.
+    static func focusedWindow(ofApplication appElement: AXUIElement) -> AXUIElement? {
+        var value: AnyObject?
+        let err = AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &value)
+        guard err == .success, let element = value else { return nil }
+        let window = element as! AXUIElement
+        guard role(of: window) == (kAXWindowRole as String) else { return nil }
+        return window
+    }
+
     static func setFrame(_ frame: CGRect, on element: AXUIElement) {
         setPosition(frame.origin, on: element)
         setSize(frame.size, on: element)

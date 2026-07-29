@@ -32,6 +32,17 @@ final class DockController: ObservableObject {
     /// Optional — hosts without tabs (VSCode, Xcode) leave this nil.
     private var tabIDsBySession: [Session.ID: String] = [:]
     private var observers: [pid_t: AXObserver] = [:]
+    /// Host pids we've subscribed for app-level `focusedWindowChanged`
+    /// (on the application element, not a window). Tracked so we
+    /// subscribe once per pid rather than once per docked window.
+    /// Drives "click a docked host window directly → hub selection
+    /// follows" without moving any windows.
+    private var appFocusSubscribedPIDs: Set<pid_t> = []
+    /// Token for `NSWorkspace.didActivateApplicationNotification` —
+    /// covers the cmd-tab-to-host case, where the focused window
+    /// inside the host didn't change (so `focusedWindowChanged` won't
+    /// fire) but the host app came forward.
+    private var appActivatedObserver: NSObjectProtocol?
     private let tracker = AXWriteTracker()
     private lazy var animator = FrameAnimator(tracker: tracker)
     /// Toggles ignoresMouseEvents on the hub window based on cursor
@@ -171,6 +182,22 @@ final class DockController: ObservableObject {
             Task { @MainActor in self.handleAppUnhidden(pid: pid) }
         }
 
+        // Keep the hub's selection in sync when the user activates a
+        // host app directly (cmd-tab, Dock icon, Mission Control)
+        // rather than clicking in the hub. Selection-only: we never
+        // move a window here — the user's already looking at what they
+        // want. See handleExternalFocus.
+        appActivatedObserver = workspaceCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            let pid = app.processIdentifier
+            Task { @MainActor in self.handleAppActivated(pid: pid) }
+        }
+
         // Detect Cmd-H of the hub itself so docked windows hide
         // alongside the hub instead of orphaning on screen.
         // NSApplication.willHide/didUnhide are app-level (not
@@ -238,6 +265,9 @@ final class DockController: ObservableObject {
             workspaceCenter.removeObserver(observer)
         }
         if let observer = appUnhiddenObserver {
+            workspaceCenter.removeObserver(observer)
+        }
+        if let observer = appActivatedObserver {
             workspaceCenter.removeObserver(observer)
         }
     }
@@ -719,6 +749,16 @@ final class DockController: ObservableObject {
             AXNotification.miniaturized,
             AXNotification.deminiaturized
         ])
+        // Subscribe focusedWindowChanged once per host pid, on the
+        // application element (it's an app-level notification, not a
+        // window one). Fires when the user clicks a different window
+        // of this host — we use it to follow the selection.
+        if !appFocusSubscribedPIDs.contains(pid) {
+            observer.subscribe(element: AXUIElementCreateApplication(pid), notifications: [
+                AXNotification.focusedWindowChanged
+            ])
+            appFocusSubscribedPIDs.insert(pid)
+        }
     }
 
     private func unobserve(window: AXUIElement) {
@@ -745,9 +785,54 @@ final class DockController: ObservableObject {
             handleMiniaturizedEvent(event)
         case AXNotification.deminiaturized:
             handleDeminiaturizedEvent(event)
+        case AXNotification.focusedWindowChanged:
+            // event.element is the application element the notification
+            // was registered on; its current focused window is the one
+            // the user just brought forward.
+            if let focused = AXSupport.focusedWindow(ofApplication: event.element) {
+                handleExternalFocus(window: focused)
+            }
         default:
             break
         }
+    }
+
+    /// User activated a host app directly (cmd-tab / Dock / Mission
+    /// Control). If it hosts docked sessions, follow the selection to
+    /// its focused window. No-op when the app isn't one we're docking.
+    private func handleAppActivated(pid: pid_t) {
+        guard observers[pid] != nil else { return }
+        guard let focused = AXSupport.focusedWindow(ofApplication: AXUIElementCreateApplication(pid)) else { return }
+        handleExternalFocus(window: focused)
+    }
+
+    /// The user brought a foreign host window to the front outside the
+    /// hub (clicked it, cmd-tabbed to it). If it maps to a docked
+    /// session, sync the hub's selection to match — *without* moving
+    /// any window. See `syncSelection`.
+    private func handleExternalFocus(window: AXUIElement) {
+        guard let sessionID = sessionID(for: window) else { return }
+        syncSelection(to: sessionID)
+    }
+
+    /// Selection-only sync used by the external-focus paths. Sets the
+    /// dock's `activeSessionID` *first*, then mirrors it into
+    /// `store.selectedSessionID`. Ordering matters: MainView observes
+    /// selectedSessionID and calls back into `setActiveSessionID`,
+    /// which early-returns when the id is already active — so pre-
+    /// setting activeSessionID means that callback is a no-op and no
+    /// raise/reposition happens. That's what keeps this "selection
+    /// only": the user already has the window they want up front; we
+    /// just make the sidebar and tab bar agree with reality.
+    ///
+    /// The `activeSessionID != sessionID` guard is also the loop
+    /// breaker: our own raises fire focusedWindowChanged for the
+    /// already-active session, and this bails before touching anything.
+    private func syncSelection(to sessionID: Session.ID) {
+        guard activeSessionID != sessionID else { return }
+        guard !minimizedSessionIDs.contains(sessionID) else { return }
+        activeSessionID = sessionID
+        store.selectedSessionID = sessionID
     }
 
     private func handleMiniaturizedEvent(_ event: AXObserver.Event) {

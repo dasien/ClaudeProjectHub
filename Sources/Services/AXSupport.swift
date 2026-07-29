@@ -20,7 +20,13 @@ enum AXSupport {
         var value: AnyObject?
         let err = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
         guard err == .success, let array = value as? [AXUIElement] else { return [] }
-        return array
+        // Filter to genuine windows. During sleep/wake the AX server
+        // transiently returns non-window elements (the application
+        // element itself has been observed here) in kAXWindows; binding
+        // one of those produces a live-but-unraisable session — role
+        // reads succeed so it looks bound, but AXMain/AXFocused/AXRaise
+        // all come back Unsupported. See AXSupport.raise.
+        return array.filter { role(of: $0) == (kAXWindowRole as String) }
     }
 
     static func title(of element: AXUIElement) -> String? {
@@ -113,19 +119,24 @@ enum AXSupport {
         return CGRect(origin: origin, size: size)
     }
 
-    /// Cheap "is this AX element still backed by a live window" probe.
-    /// A single attribute read against `kAXRoleAttribute` — present on
-    /// every AX element, so `.success` means the element is responsive
-    /// and any other return code means the window has been destroyed
-    /// or the host app has gone away. Callers use this (directly or
-    /// indirectly via `raise(_:)`'s return value) to drop bindings
-    /// that have become dangling, since AX writes against a dangling
-    /// element silently no-op and previously left the hub
-    /// unresponsive on selection.
-    static func elementIsLive(_ element: AXUIElement) -> Bool {
+    /// The element's `kAXRole` string, or nil if the read fails —
+    /// which means the element is dangling (window destroyed / host
+    /// app gone). Every live AX element answers `kAXRole`.
+    static func role(of element: AXUIElement) -> String? {
         var value: AnyObject?
         let err = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value)
-        return err == .success
+        guard err == .success, let role = value as? String else { return nil }
+        return role
+    }
+
+    /// Cheap "is this AX element still backed by a live window" probe —
+    /// a role read succeeds iff the element is responsive. Used by
+    /// callers (directly or via `raise(_:)`) to drop bindings that have
+    /// become dangling, since AX writes against a dangling element
+    /// silently no-op and previously left the hub unresponsive on
+    /// selection.
+    static func elementIsLive(_ element: AXUIElement) -> Bool {
+        role(of: element) != nil
     }
 
     /// Brings a window to the front of its app's window stack.
@@ -139,24 +150,39 @@ enum AXSupport {
     /// either already have these attributes set correctly or accept the
     /// write as a no-op.
     ///
-    /// Returns false ONLY when the liveness probe fails — i.e. the
-    /// element is dangling and callers should drop their binding. If
-    /// the probe passes but individual writes return non-success
-    /// (JBR's AX is famously flaky), we log and still return true; on
-    /// those hosts the writes routinely report errors yet the raise
-    /// itself works, and treating that as failure would cause healthy
-    /// bindings to be discarded.
+    /// Returns false when the element can't actually be raised, so the
+    /// caller can drop the binding and recover:
+    ///   - the liveness probe fails (dangling — window destroyed), or
+    ///   - the element is live but NOT a window AND rejects every one
+    ///     of main/focus/raise. That's the signature of a mis-binding
+    ///     (e.g. an application element got bound instead of a window):
+    ///     `kAXRole` answers so it looks live, but the window ops come
+    ///     back `kAXErrorAttributeUnsupported` / `ActionUnsupported`.
+    ///     Left unchecked this returned true and the hub silently did
+    ///     nothing on every click of that session.
+    /// A real window (role == AXWindow) that reports flaky write errors
+    /// still returns true — that's the JBR case, where the writes error
+    /// but the raise visibly works, and treating it as failure would
+    /// discard healthy bindings.
     @discardableResult
     static func raise(_ element: AXUIElement) -> Bool {
-        guard elementIsLive(element) else {
+        guard let role = role(of: element) else {
             log.error("AXSupport.raise: element is dangling; skipping writes")
             return false
         }
         let mainErr = AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
         let focusErr = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         let raiseErr = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+        let allFailed = mainErr != .success && focusErr != .success && raiseErr != .success
         if mainErr != .success || focusErr != .success || raiseErr != .success {
-            log.notice("AXSupport.raise: writes returned non-success (AXMain=\(mainErr.rawValue, privacy: .public) AXFocused=\(focusErr.rawValue, privacy: .public) AXRaise=\(raiseErr.rawValue, privacy: .public)); proceeding")
+            log.notice("AXSupport.raise: writes returned non-success (role=\(role, privacy: .public) AXMain=\(mainErr.rawValue, privacy: .public) AXFocused=\(focusErr.rawValue, privacy: .public) AXRaise=\(raiseErr.rawValue, privacy: .public))")
+        }
+        // A live non-window element that rejects everything is a
+        // mis-binding, not a JBR flake — report failure so the caller
+        // undocks + rebinds instead of silently no-op'ing forever.
+        if allFailed && role != (kAXWindowRole as String) {
+            log.error("AXSupport.raise: live element is not a raisable window (role=\(role, privacy: .public)) — treating as bad binding")
+            return false
         }
         return true
     }

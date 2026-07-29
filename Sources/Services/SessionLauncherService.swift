@@ -239,6 +239,14 @@ final class SessionLauncherService: ObservableObject {
     /// (and hub-launched) sessions whose pid survived a hub restart
     /// come back as live tabs instead of zombie closed rows.
     func reattachAll() async {
+        // Catch the "hub thought it died, but claude is actually alive"
+        // case first — typically happens after a spurious close (destroy
+        // event during sleep/wake, false-positive lifecycle poll) or
+        // when the user re-runs `claude --resume <id>` externally after
+        // the hub gave up on it. Promotes those records back to .idle
+        // so the reattach loop below can bind them like anything else.
+        reconcileStaleClosedSessions()
+
         // Snapshot to avoid iterating while sessions get mutated.
         let candidates = store.sessions.filter { $0.status.isRunning && $0.pid != nil }
         for session in candidates {
@@ -260,6 +268,64 @@ final class SessionLauncherService: ObservableObject {
         }
     }
 
+    /// Walk `~/.claude/sessions/` for live claude processes and, for
+    /// each one whose sessionId matches a stored Session marked
+    /// `.closed`, promote that Session back to `.idle` with the live
+    /// pid. `reattachAll`'s main loop then picks it up like any other
+    /// running session.
+    ///
+    /// Handles two related situations:
+    ///   1. Hub gave up on a session (spurious destroy during sleep/
+    ///      wake, lifecycle poll false-positive) but the claude
+    ///      process actually survived.
+    ///   2. User externally ran `claude --resume <id>` after the hub
+    ///      had marked the record closed — new pid, same claudeSessionId,
+    ///      hub had no way to know.
+    private func reconcileStaleClosedSessions() {
+        // Build sessionId → live pid map. Filter to interactive/cli
+        // like ExternalSessionScanner does; background / plugin
+        // sessions can share sessionIds with interactive ones in some
+        // configurations and we don't want to adopt those.
+        var livePIDBySessionId: [String: pid_t] = [:]
+        for file in ClaudeSessionFile.enumerateAll() {
+            guard let pid = file.pid, kill(pid_t(pid), 0) == 0 || errno == EPERM else { continue }
+            if let kind = file.kind, kind != "interactive" { continue }
+            if let entry = file.entrypoint, entry != "cli" { continue }
+            livePIDBySessionId[file.sessionId] = pid_t(pid)
+        }
+        guard !livePIDBySessionId.isEmpty else { return }
+
+        for session in store.sessions
+            where session.status == .closed
+            && session.claudeSessionId != nil {
+            guard let claudeSessionId = session.claudeSessionId,
+                  let pid = livePIDBySessionId[claudeSessionId] else { continue }
+            store.update(id: session.id) {
+                $0.status = .idle
+                $0.pid = pid
+            }
+            launcherLog.notice("Reconciled stale-closed session \(session.id, privacy: .public) — claude pid \(pid, privacy: .public) is alive with the same sessionId")
+        }
+    }
+
+    /// A reattach failure is terminal only if the claude process is
+    /// actually gone. During sleep/wake the host's AppleScript and AX
+    /// can briefly fail to resolve a window for a still-alive session;
+    /// closing it then would be a false positive that loses the docked
+    /// session. `kill(pid, 0)` is the canonical liveness probe.
+    private func closeSessionIfProcessDead(_ session: Session, pid: pid_t) {
+        let dead = kill(pid, 0) != 0 && errno != EPERM
+        if dead {
+            store.update(id: session.id) {
+                $0.status = .closed
+                $0.pid = nil
+                $0.hostWindowID = nil
+            }
+        } else {
+            launcherLog.notice("reattach: pid \(pid, privacy: .public) alive but no window resolved yet (likely transient wake state) — leaving session for a later retry")
+        }
+    }
+
     @discardableResult
     private func reattach(_ session: Session) async -> Bool {
         guard let pid = session.pid else { return false }
@@ -267,10 +333,7 @@ final class SessionLauncherService: ObservableObject {
             claudePID: pid,
             registry: hostRegistry
         ) else {
-            store.update(id: session.id) {
-                $0.status = .closed
-                $0.pid = nil
-            }
+            closeSessionIfProcessDead(session, pid: pid)
             return false
         }
 
@@ -297,11 +360,7 @@ final class SessionLauncherService: ObservableObject {
                 ?? AXSupport.windows(of: match.hostAppPID).first {
             window = fallback
         } else {
-            store.update(id: session.id) {
-                $0.status = .closed
-                $0.pid = nil
-                $0.hostWindowID = nil
-            }
+            closeSessionIfProcessDead(session, pid: pid)
             return false
         }
 
@@ -427,7 +486,12 @@ final class SessionLauncherService: ObservableObject {
     }
 
     /// Returns the AX-focused window of the given app, or nil if AX
-    /// can't read it.
+    /// can't read it — or if what it returns isn't actually a window.
+    /// The role check matters during sleep/wake: the AX server can
+    /// hand back the application element for kAXFocusedWindow while
+    /// the host is mid-restoration, and binding that produces a
+    /// live-but-unraisable session (role reads succeed, window ops
+    /// come back Unsupported).
     private func focusedWindow(of pid: pid_t) -> AXUIElement? {
         let app = AXUIElementCreateApplication(pid)
         var value: AnyObject?
@@ -437,7 +501,9 @@ final class SessionLauncherService: ObservableObject {
             &value
         )
         guard err == .success, let element = value else { return nil }
-        return (element as! AXUIElement)
+        let window = element as! AXUIElement
+        guard AXSupport.role(of: window) == (kAXWindowRole as String) else { return nil }
+        return window
     }
 
     // MARK: - Launcher dispatch

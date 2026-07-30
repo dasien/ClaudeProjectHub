@@ -364,16 +364,36 @@ final class SessionLauncherService: ObservableObject {
         }
         guard !livePIDBySessionId.isEmpty else { return [] }
 
+        // Invariant: one live claude process maps to at most one active
+        // hub session. Two records can legitimately carry the same
+        // `claudeSessionId` (adopting the same historical conversation
+        // twice used to create a second record), and without this guard
+        // BOTH got promoted onto the same pid and reattached to the same
+        // window — so resuming one session made a second, unrelated tab
+        // appear for the same terminal. Seeded with conversations already
+        // claimed by a running record, then extended as we promote, so a
+        // pair of closed duplicates can't both win in one pass.
+        var claimedConversations = Set(
+            store.sessions
+                .filter { $0.status.isRunning }
+                .compactMap { $0.claudeSessionId }
+        )
+
         var promoted: [Session.ID] = []
         for session in store.sessions
             where session.status == .closed
             && session.claudeSessionId != nil {
             guard let claudeSessionId = session.claudeSessionId,
                   let pid = livePIDBySessionId[claudeSessionId] else { continue }
+            guard !claimedConversations.contains(claudeSessionId) else {
+                launcherLog.notice("Skipped stale-closed session \(session.id, privacy: .public) — conversation is already tracked by a running session")
+                continue
+            }
             store.update(id: session.id) {
                 $0.status = .idle
                 $0.pid = pid
             }
+            claimedConversations.insert(claudeSessionId)
             promoted.append(session.id)
             launcherLog.notice("Reconciled stale-closed session \(session.id, privacy: .public) — claude pid \(pid, privacy: .public) is alive with the same sessionId")
         }
@@ -476,6 +496,34 @@ final class SessionLauncherService: ObservableObject {
             presentError(LauncherError.unknownHost(hostID))
             return false
         }
+
+        // Reuse an existing record for this conversation rather than
+        // adding a second one. Two records sharing a `claudeSessionId`
+        // both get promoted by `reconcileStaleClosedSessions` onto the
+        // same live pid and reattached to the same window, so resuming
+        // one made an unrelated second tab appear for one terminal.
+        // (The historical scanner hides conversations the hub already
+        // tracks, so this normally only fires from a stale scanner list
+        // — but the invariant belongs here regardless.)
+        if let existing = store.sessions.first(where: {
+            $0.claudeSessionId == historical.claudeSessionId
+        }) {
+            if existing.status.isRunning {
+                // Already live — surface it instead of resuming twice.
+                store.selectedSessionID = existing.id
+                return true
+            }
+            // Honour the host the user picked in the dialog, then
+            // re-read the record so `resume` sees the update.
+            if existing.hostID != hostID {
+                store.update(id: existing.id) { $0.hostID = hostID }
+            }
+            guard let refreshed = store.sessions.first(where: { $0.id == existing.id }) else {
+                return false
+            }
+            return await resume(refreshed, windowMode: windowMode, targetSessionID: targetSessionID)
+        }
+
         let session = Session(
             name: nil,
             cwd: historical.cwd,
@@ -679,7 +727,13 @@ final class SessionLauncherService: ObservableObject {
         return nil
     }
 
-    private func currentClaudePIDs() async -> Set<pid_t> {
+    /// `nonisolated` deliberately: this spawns `pgrep` and blocks on
+    /// `waitUntilExit()`. Inheriting the class's `@MainActor` meant
+    /// every one of those blocked the main thread, and
+    /// `waitForNewClaudePID` calls it up to 32 times over 8 seconds —
+    /// so each session launch stalled the UI on ~32 subprocess spawns.
+    /// Nothing here touches actor state, so hopping off is free.
+    private nonisolated func currentClaudePIDs() async -> Set<pid_t> {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
         task.arguments = ["-x", "claude"]

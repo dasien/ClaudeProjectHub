@@ -524,6 +524,34 @@ final class DockController: ObservableObject {
         tabIDsBySession[sessionID] = tabID
     }
 
+    /// Other docked sessions sharing this session's host window — i.e.
+    /// its sibling tabs. Non-empty means closing the *window* would take
+    /// those siblings down too.
+    func siblingSessionIDs(of sessionID: Session.ID) -> [Session.ID] {
+        guard let element = bindings[sessionID] else { return [] }
+        return sessionIDs(for: element).filter { $0 != sessionID }
+    }
+
+    /// Closes only this session's tab inside its host window, leaving
+    /// siblings running. Returns false when the host can't do it (no tab
+    /// identity for the session, or no per-tab close in its AppleScript
+    /// dictionary) so the caller can choose another strategy instead of
+    /// closing the whole window.
+    func closeHostTab(sessionID: Session.ID) -> Bool {
+        guard let hostID = hostIDsBySession[sessionID] else { return false }
+        guard let tabID = tabIDsBySession[sessionID] ?? deriveTabID(for: sessionID) else {
+            dockLog.notice("closeHostTab: no tab identity for \(sessionID, privacy: .public) — cannot close just its tab")
+            return false
+        }
+        let handled = HostTabSelector.closeTab(
+            hostID: hostID,
+            tabIdentifier: tabID,
+            windowID: cgIDsBySession[sessionID]
+        )
+        dockLog.notice("closeHostTab: host=\(hostID, privacy: .public) tty=\(tabID, privacy: .public) handled=\(handled, privacy: .public)")
+        return handled
+    }
+
     /// True iff this docked session has a known controlling-tty
     /// identifier for routing per-tab AppleScript switches.
     /// SessionLifecycleMonitor consults this each poll cycle and

@@ -137,13 +137,68 @@ final class SessionLifecycleMonitor: ObservableObject {
         }
     }
 
+    /// Closes a single session.
+    ///
+    /// `WindowManager.close` presses the host *window's* close button,
+    /// which is right when the session is the window's only occupant but
+    /// catastrophic when it isn't: for two sessions sharing one iTerm2
+    /// window as tabs, closing either one took the whole window down and
+    /// killed the sibling. So when siblings exist we close just this
+    /// session's tab, and never touch the window.
     func close(_ sessionID: Session.ID) {
-        windowManager.close(sessionID)
+        let siblings = dockController.siblingSessionIDs(of: sessionID)
+        if siblings.isEmpty {
+            // Sole occupant — closing the window is the session.
+            windowManager.close(sessionID)
+        } else if dockController.closeHostTab(sessionID: sessionID) {
+            // Tab closed; the host tears down that pty, so the claude
+            // process exits and the exit watcher notices on its own.
+            windowManager.unbind(sessionID)
+        } else {
+            // Host has no per-tab close (Terminal's `tab` responds to
+            // nothing — only `window` does). Closing the window would
+            // kill the siblings, so end this session by signalling its
+            // process instead and leave the window be. The host's tab
+            // survives showing a shell prompt, which is honest: the
+            // session is gone, the terminal isn't ours to close.
+            let pid = store.sessions.first(where: { $0.id == sessionID })?.pid
+            if let pid {
+                kill(pid, SIGTERM)
+                log.notice("close: no per-tab close for this host — sent SIGTERM to claude pid \(pid, privacy: .public); \(siblings.count, privacy: .public) sibling session(s) left untouched")
+            } else {
+                log.notice("close: no per-tab close and no pid for \(sessionID, privacy: .public) — session marked closed without touching the host window")
+            }
+            windowManager.unbind(sessionID)
+        }
+        // The session no longer occupies the dock either way. In the
+        // sole-occupant case the window destroy would undock it anyway,
+        // but a closed *tab* fires no window-destroy event, so this has
+        // to be explicit or the session lingers in dockedSessionIDs
+        // bound to a window it's no longer in.
+        dockController.undock(
+            sessionID: sessionID,
+            restoreFrame: false,
+            reason: "session closed by user"
+        )
         store.update(id: sessionID) {
             $0.status = .closed
             $0.pid = nil
             $0.hostWindowID = nil
             $0.lastActivityAt = Date()
+        }
+
+        // Move the selection to whatever is on screen now. `undock`
+        // already promoted the dock's active session, so the *content*
+        // followed, but the sidebar row and tab highlight track
+        // `store.selectedSessionID` — which was left pointing at the
+        // session we just closed. Prefer a sibling from the same host
+        // window, since after closing a tab that's the tab the host
+        // itself now shows; `setActiveSessionID` then makes the dock
+        // agree (and is a no-op when it already does).
+        if store.selectedSessionID == sessionID,
+           let promoted = siblings.first ?? dockController.activeSessionID {
+            dockController.setActiveSessionID(promoted)
+            store.selectedSessionID = promoted
         }
     }
 

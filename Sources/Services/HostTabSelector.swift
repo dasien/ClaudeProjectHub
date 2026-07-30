@@ -50,6 +50,48 @@ enum HostTabSelector {
         }
     }
 
+    /// Closes just the one tab matching `tabIdentifier`, leaving the rest
+    /// of the host window alone.
+    ///
+    /// - Returns: false when this host has no way to close a single tab,
+    ///   so the caller can pick a different strategy rather than falling
+    ///   back to closing the whole window (which would take the sibling
+    ///   sessions down too).
+    ///
+    /// Host support, from their AppleScript dictionaries (checked
+    /// 2026-07-30): iTerm2's `session` and `tab` both respond to
+    /// `close`. Terminal's `tab` responds to **nothing** — only `window`
+    /// does — so there is no per-tab close for it at all.
+    static func closeTab(hostID: String, tabIdentifier: String, windowID: CGWindowID?) -> Bool {
+        switch hostID {
+        case "iterm2":
+            _ = try? AppleScriptRunner.run(
+                iTerm2CloseScript(tty: tabIdentifier, windowID: windowID)
+            )
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Resolves the target tab before closing anything. Calling `close`
+    /// while iterating `tabs of w` mutates the collection mid-loop and
+    /// fails with `-1719` ("Invalid index") — verified.
+    private static func iTerm2CloseScript(tty: String, windowID: CGWindowID?) -> String {
+        let body = """
+                set target to missing value
+                repeat with t in tabs of w
+                    repeat with s in sessions of t
+                        try
+                            if tty of s is "\(tty)" then set target to t
+                        end try
+                    end repeat
+                end repeat
+                if target is not missing value then close target
+        """
+        return wrap(app: "iTerm", windowID: windowID, body: body)
+    }
+
     /// iTerm2 nests sessions inside tabs, so the tty lives on the
     /// session and the selection happens on the tab.
     private static func iTerm2Script(tty: String, windowID: CGWindowID?) -> String {

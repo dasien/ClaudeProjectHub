@@ -226,6 +226,26 @@ The ordering raise → select-to-completion is load-bearing. Don't make this asy
 
 Related: don't let a session's tabID depend on capture timing. It's derived on demand from the session's pid in `selectActiveTab` now, so the launch-path capture and the lifecycle self-heal are optimisations, not prerequisites.
 
+### Closing a session must not close the host window — and only iTerm2 can close a single tab
+
+`WindowManager.close` presses the host window's close button (`kAXCloseButtonAttribute`). That conflates "session" with "window", which was invisible while sessions were one-per-window and destructive the moment two shared one as tabs: closing either took the window down and killed the sibling.
+
+Host capability differs, per their AppleScript dictionaries (checked 2026-07-30 with `sdef`):
+
+| Host | `session` responds to `close` | `tab` responds to `close` | `window` responds to `close` |
+|---|---|---|---|
+| iTerm2 | yes | **yes** | yes |
+| Terminal | n/a | **no — responds to nothing** | yes |
+
+So iTerm2 can close one tab; Terminal cannot at all. `SessionLifecycleMonitor.close` therefore branches three ways: sole occupant → window close button; shares the window and the host supports per-tab close → close that tab; shares and it doesn't → SIGTERM the claude process and leave the window alone (the tab survives at a shell prompt, which is honest — the session is gone, the terminal isn't ours to close).
+
+Two traps found while building this:
+
+- **Don't `close` while iterating.** `repeat with t in tabs of w … close t` mutates the collection mid-loop and fails with `-1719` ("Invalid index"). Resolve the target reference first, close after the loop. Same shape of bug applies to any destructive AppleScript iteration.
+- **A closed tab fires no window-destroy AX event**, so `handleDestroyEvent` never runs and the session has to be undocked explicitly. Otherwise it lingers in `dockedSessionIDs` bound to a window it no longer occupies. Only the sole-occupant path gets undocked for free.
+
+Related UI detail: `undock()` promotes the dock's `activeSessionID`, so content follows a close — but the sidebar row and tab highlight track `store.selectedSessionID`, which has to be moved separately or it stays on the closed session.
+
 ### Window title doesn't survive shell/claude
 
 For both Terminal and iTerm2, setting the tab/window title via AppleScript works *briefly* but the shell's first prompt and claude's startup print escape sequences that overwrite it within ~1 second. Don't rely on titles for AX binding when the host returns a window id directly. Use marker-in-title as a fallback only when no better option exists.

@@ -54,7 +54,7 @@ final class SessionCatalog: ObservableObject {
             let usage = await loadUsage(forCwd: session.cwd, claudeSessionId: session.claudeSessionId)
             let cost = usage.totalCost(using: pricing)
             hubRows.append(DashboardRow(
-                id: session.id,
+                id: "session-\(session.id.uuidString)",
                 name: session.displayTitle,
                 cwd: session.cwd,
                 cwdPath: session.cwd.path,
@@ -132,7 +132,11 @@ final class SessionCatalog: ObservableObject {
                 let cost = usage.totalCost(using: pricing)
 
                 rows.append(DashboardRow(
-                    id: UUID(),
+                    // Derived from the conversation id so the row keeps
+                    // its identity across refreshes. A fresh UUID() here
+                    // made Table rebuild every historical row on every
+                    // refresh, dropping selection and scroll position.
+                    id: "transcript-\(claudeSessionId)",
                     name: cwd.lastPathComponent,
                     cwd: cwd,
                     cwdPath: cwd.path,

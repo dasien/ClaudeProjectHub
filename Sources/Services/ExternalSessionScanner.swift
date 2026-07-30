@@ -90,7 +90,15 @@ final class ExternalSessionScanner: ObservableObject {
                 hostID: match?.hostID
             )
         }
-        self.sessions = candidates.sorted { $0.cwd.lastPathComponent < $1.cwd.lastPathComponent }
+        // Only republish on an actual change. `@Published` fires
+        // `objectWillChange` on assignment regardless of equality, and
+        // `SessionsSidebar` observes this object — so assigning an
+        // identical array every 3s re-ran the whole sidebar body, the
+        // session sort, and the full List diff ~20 times a minute while
+        // completely idle.
+        let next = candidates.sorted { $0.cwd.lastPathComponent < $1.cwd.lastPathComponent }
+        guard next != sessions else { return }
+        self.sessions = next
     }
 
     /// `kill(pid, 0)` succeeds if the process exists and we have

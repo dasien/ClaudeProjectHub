@@ -64,6 +64,13 @@ struct SessionsSidebar: View {
                             // Dock is the supported path until we add
                             // a proper drag handle.
                     }
+                    // These rows carry no `.tag`, so without this the
+                    // List treats a click on them as "select nothing"
+                    // and writes nil into `store.selectedSessionID` —
+                    // which clears the sidebar/tab highlight AND wipes
+                    // the persisted selection, since SessionStore
+                    // mirrors nil to UserDefaults.removeObject.
+                    .selectionDisabled()
                 }
             }
             if !historicalScanner.sessions.isEmpty {
@@ -71,6 +78,8 @@ struct SessionsSidebar: View {
                     ForEach(historicalScanner.sessions) { historical in
                         historicalRow(for: historical)
                     }
+                    // Same nil-selection guard as the dock rows above.
+                    .selectionDisabled()
                 } header: {
                     historicalHeader
                 }

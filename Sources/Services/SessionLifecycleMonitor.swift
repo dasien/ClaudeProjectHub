@@ -47,6 +47,13 @@ final class SessionLifecycleMonitor: ObservableObject {
     /// watchers in sync. Idempotent — safe to call once at app launch.
     func start() {
         guard cancellables.isEmpty else { return }
+        // No Task hop needed here, unlike the watcher subscription
+        // below — and the difference is deliberate. `@Published` fires
+        // on willSet, but the *emitted value* is the post-mutation one;
+        // only reading the property inside a sink yields stale state
+        // (verified empirically). This closure derives `hasRunning`
+        // purely from the emitted array, so it sees the last session
+        // close and stops the poll correctly.
         store.$sessions
             .map { sessions in sessions.contains { $0.status.isRunning } }
             .removeDuplicates()
@@ -61,9 +68,11 @@ final class SessionLifecycleMonitor: ObservableObject {
 
         // Separate subscription (no removeDuplicates) because watchers
         // track *which* pids are running, not just whether any are.
-        // Deferred via Task so we read committed state — @Published
-        // fires on willSet, and syncExitWatchers can itself mutate the
-        // store when it finds a pid that already exited.
+        // This one DOES need the Task hop: syncExitWatchers reads
+        // `store.sessions` directly rather than the emitted value, and
+        // inside a willSet-timed sink that property is still the old
+        // array. The defer also lets syncExitWatchers mutate the store
+        // (markClosed for an already-exited pid) without re-entering.
         store.$sessions
             .sink { [weak self] _ in
                 Task { @MainActor in self?.syncExitWatchers() }

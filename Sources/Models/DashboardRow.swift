@@ -5,7 +5,13 @@ import Foundation
 /// the SwiftUI `Table` can render and sort without re-walking the
 /// catalog's source data on every layout pass.
 struct DashboardRow: Identifiable {
-    let id: UUID
+    /// Stable across `SessionCatalog.refresh()` calls, which matters
+    /// because `Table` keys its selection and scroll position on it —
+    /// historical rows previously got a fresh `UUID()` per refresh, so
+    /// every refresh rebuilt them and dropped both. Namespaced by
+    /// origin (`session-` / `transcript-`) so a hub session id and a
+    /// conversation id can never collide.
+    let id: String
     let name: String
     let cwd: URL
     /// Pre-computed `cwd.path` so the Table can sort the column as a

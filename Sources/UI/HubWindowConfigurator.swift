@@ -68,7 +68,14 @@ private final class WindowAccessView: NSView {
     }
 
     private func installFrameSaver(for window: NSWindow) {
-        let save: (Notification) -> Void = { _ in
+        // `[weak window]` breaks a retain cycle: the notification token
+        // retains this block, the view retains the token, and the window
+        // retains the view — so capturing `window` strongly kept the
+        // whole graph alive and meant `deinit` (and therefore the
+        // observer removal below) never ran. Leaked one window + view
+        // hierarchy per hub-window close/reopen.
+        let save: (Notification) -> Void = { [weak window] _ in
+            guard let window else { return }
             UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: Self.frameDefaultsKey)
         }
         resizeObserver = NotificationCenter.default.addObserver(

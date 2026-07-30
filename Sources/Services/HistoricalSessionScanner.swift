@@ -97,7 +97,14 @@ final class HistoricalSessionScanner: ObservableObject {
             collected.append(contentsOf: result.surfaced)
             seenIds.formUnion(result.seen)
         }
-        sessions = collected.sorted { $0.lastActivityAt > $1.lastActivityAt }
+        // Only republish on an actual change — see the same guard in
+        // ExternalSessionScanner. Historical entries change rarely, so
+        // without this the sidebar was being invalidated every 10s for
+        // nothing.
+        let next = collected.sorted { $0.lastActivityAt > $1.lastActivityAt }
+        if next != sessions {
+            sessions = next
+        }
 
         // Cleanup: any dismissed id no longer present on disk gets
         // dropped from the dismissed set. Cheap — set subtraction +

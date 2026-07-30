@@ -816,9 +816,23 @@ final class DockController: ObservableObject {
     /// hub (clicked it, cmd-tabbed to it). If it maps to a docked
     /// session, sync the hub's selection to match — *without* moving
     /// any window. See `syncSelection`.
+    ///
+    /// Must use the plural lookup: for tab-sharing hosts every tab in a
+    /// window is the same AXUIElement, so the singular `sessionID(for:)`
+    /// returns an arbitrary sibling from dictionary order. That produced
+    /// a real desync — clicking tab A fires `focusedWindowChanged` from
+    /// our own raise, the lookup answers B, and the hub selects B while
+    /// the terminal is showing A (and `MainView.onChange` early-returns,
+    /// so nothing corrects it). If the active session is among the
+    /// window's sessions we're already correct and do nothing; AX can't
+    /// tell us *which tab* has focus, so we don't guess between the
+    /// remaining siblings.
     private func handleExternalFocus(window: AXUIElement) {
-        guard let sessionID = sessionID(for: window) else { return }
-        syncSelection(to: sessionID)
+        let candidates = sessionIDs(for: window)
+        guard !candidates.isEmpty else { return }
+        if let active = activeSessionID, candidates.contains(active) { return }
+        guard candidates.count == 1, let only = candidates.first else { return }
+        syncSelection(to: only)
     }
 
     /// Selection-only sync used by the external-focus paths. Sets the
@@ -841,22 +855,34 @@ final class DockController: ObservableObject {
         store.selectedSessionID = sessionID
     }
 
+    /// Minimizing a window minimizes *every* session in it, so mark all
+    /// of them. With the singular lookup only one sibling got marked,
+    /// and the consequences were both user-visible: if the unmarked
+    /// sibling was active, the next hub activation's raise un-hid the
+    /// window the user had just minimized (the exact hazard the Cmd-M/
+    /// Cmd-H lesson in CLAUDE.md documents); and `visibleDockedSessionIDs`
+    /// still contained it, so the mouse gate kept click-through enabled
+    /// over a dock rect with no window behind it.
     private func handleMiniaturizedEvent(_ event: AXObserver.Event) {
-        guard let sessionID = sessionID(for: event.element) else { return }
-        minimizedSessionIDs.insert(sessionID)
+        let affected = sessionIDs(for: event.element)
+        guard !affected.isEmpty else { return }
+        minimizedSessionIDs.formUnion(affected)
         // Skip auto-promote when the minimize is part of a hub-driven
         // batch — every visible session is going down together, no
-        // sibling to promote to.
-        if !hubMinimizedSessionIDs.contains(sessionID),
-           activeSessionID == sessionID {
+        // sibling to promote to. Promoting to a sibling of the *same*
+        // window would also be pointless: it's equally minimized.
+        if let active = activeSessionID,
+           affected.contains(active),
+           !hubMinimizedSessionIDs.contains(active) {
             promoteActiveAwayFromMinimized()
         }
         updateMouseGate()
     }
 
     private func handleDeminiaturizedEvent(_ event: AXObserver.Event) {
-        guard let sessionID = sessionID(for: event.element) else { return }
-        minimizedSessionIDs.remove(sessionID)
+        let affected = sessionIDs(for: event.element)
+        guard !affected.isEmpty else { return }
+        minimizedSessionIDs.subtract(affected)
         updateMouseGate()
     }
 
@@ -947,21 +973,29 @@ final class DockController: ObservableObject {
     private func evaluateDraggedDocked(sessionID: Session.ID) {
         guard let element = bindings[sessionID] else { return }
         let current = AXSupport.frame(of: element)
+        // The user dragged a *window*, so the verdict applies to every
+        // session sharing it (tab siblings). Undocking only the one
+        // session the event happened to resolve to left the survivor
+        // docked, and its next `repositionAll` dragged the window right
+        // back into the dock rect — so a tear-out of a 2-tab window
+        // appeared to snap back.
+        let affected = sessionIDs(for: element)
         // Resize is decisive — the user wants a different size than
         // the dock allows. Undock without restoring (their size is
         // what they want).
         if current.size != dockRect.size {
-            undock(sessionID: sessionID, restoreFrame: false)
+            for id in affected { undock(sessionID: id, restoreFrame: false) }
             return
         }
         let dx = current.origin.x - dockRect.origin.x
         let dy = current.origin.y - dockRect.origin.y
         let distance = (dx * dx + dy * dy).squareRoot()
         if distance > undockThreshold {
-            undock(sessionID: sessionID, restoreFrame: false)
+            for id in affected { undock(sessionID: id, restoreFrame: false) }
         } else {
-            // Small drag — snap back to the dock rect. The setFrame
-            // is recorded with the tracker so the resulting AX event
+            // Small drag — snap back to the dock rect. One write covers
+            // every sibling; they're the same window. The setFrame is
+            // recorded with the tracker so the resulting AX event
             // doesn't loop us back here.
             repositionOne(sessionID)
         }

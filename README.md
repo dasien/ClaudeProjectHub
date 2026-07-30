@@ -18,7 +18,12 @@ Claude sessions can be from a variety of hosts.  Tracking these sessions and ide
 - **Idle session notifications** when a session transitions from working → idle and the hub isn't already focused the user receives a system notification that Claude is waiting
 - **Reattach on restart** — sessions whose underlying `claude` PID is still alive are re-bound and re-docked when the hub launches
 - **External session adoption** — any `claude` running on the machine, including ones launched outside the hub, appears in the sidebar and can be docked
+- **Resume past conversations** — closed conversations the hub never launched are discovered from `~/.claude/projects/` and listed under "Available to Resume"; pick a host and the hub runs `claude --resume` for you. Entries you'll never revisit can be hidden individually or per-project
 - **Per-session cost + token breakdown** via right-click → Get Info; pricing comes from a user-editable `models.json`
+- **Sessions Dashboard** (⌘⇧D) — one table of every session on the machine, hub-tracked or not, with cost and token totals
+- **Survives the messy cases** — sleep/wake, monitor plug/unplug, and closing the lid in clamshell mode all re-pin docked windows instead of losing them. If you resume a conversation yourself in a terminal, the hub notices and adopts it
+- **Stays in sync with you** — bring a docked host window to the front yourself (click it, ⌘-tab, Mission Control) and the hub's selection follows, without stealing focus back
+- **Keyboard**: ⌘⇧F focuses the selected session's window, ⌘1–9 switch tabs, ⌘⇧D opens the dashboard, ⌘, opens Settings
 
 ## Supported hosts
 
@@ -26,8 +31,8 @@ Pre-configured. The New Session picker filters to whichever of these you actuall
 
 - **Terminal.app**
 - **iTerm2**
-- **Visual Studio Code**
 - **JetBrains IDEs**: IntelliJ IDEA, PyCharm, WebStorm, PhpStorm, RubyMine, CLion, GoLand, Rider, Android Studio
+- **Visual Studio Code** — registered in the host list, but **its launch script isn't bundled yet**. The hub falls back to the template stub, so launching a VSCode session won't do anything useful until someone writes `Resources/Scripts/visual-studio-code.applescript`. Docking and adopting an *already-running* VSCode session works.
 
 Adding a host the hub doesn't ship with (Ghostty, WezTerm, kitty, …) is a no-code change — see [Adding a host](#adding-a-host) below.
 
@@ -51,6 +56,13 @@ open ClaudeProjectHub.xcodeproj
 
 `signing.xcconfig` is per-developer and gitignored. Find your Apple Developer team ID via `security find-identity -v -p codesigning` (paid teams) or Xcode → Settings → Accounts (Personal Teams from a free Apple ID).
 
+Two things that will bite you if you do these out of order:
+
+- **`xcodegen` fails outright if `signing.xcconfig` doesn't exist** (`invalid config file path`), so copy the example before generating — as in the commands above.
+- **Fill in the real team ID *before* running `xcodegen`, or run it again afterwards.** `xcodegen` bakes `DEVELOPMENT_TEAM` into the generated `.xcodeproj`, so if you generate while the file still says `YOUR_TEAM_ID`, Xcode keeps failing with *"No Account for Team"* even after you fix the xcconfig. Re-run `xcodegen`, then close and reopen the project so Xcode rereads it.
+
+Use a real team rather than ad-hoc signing (`-`): TCC ties Accessibility and Automation grants to the code signature, so ad-hoc builds get re-signed each time and lose their permissions on every rebuild.
+
 Run the project from Xcode. The first launch prompts for **Accessibility** access; the first time each host (Terminal, iTerm2, …) is targeted, macOS will also prompt for **Automation/Apple Events** access for that specific app. Both prompts are necessary for the hub to bind, focus, and close host windows.
 
 `.xcodeproj/` is gitignored — it's regenerated from `project.yml`. Re-run `xcodegen` whenever you add or remove files in `Sources/`.
@@ -59,19 +71,24 @@ Run the project from Xcode. The first launch prompts for **Accessibility** acces
 
 ```
 Sources/
-├── App/                  @main app + scene + environment objects
+├── App/                  @main app + scenes + environment objects
 ├── Models/               Session, HostConfig, SessionStatus, WindowMode,
-│                         DockState, ModelPricing, SessionUsage, ...
-├── Stores/               SessionStore (persistence), HostRegistry
-├── Services/             AXSupport, AXObserver, AppleScriptRunner,
-│                         ClaudeSessionFile, ClaudeSessionTranscript,
-│                         ModelPricingRegistry, SessionLauncherService,
-│                         SessionLifecycleMonitor, WindowManager,
-│                         DockController, AttentionService, ...
+│                         DockState, HistoricalSession, ModelPricing,
+│                         SessionUsage, ...
+├── Stores/               SessionStore (persistence), HostRegistry,
+│                         DismissedHistoricalStore (hidden resume entries)
+├── Services/             AXSupport, AXObserver, AXWriteTracker,
+│                         AppleScriptRunner, ClaudeSessionFile,
+│                         ClaudeSessionTranscript, ModelPricingRegistry,
+│                         SessionLauncherService, SessionLifecycleMonitor,
+│                         WindowManager, DockController, HostWindowResolver,
+│                         HostTabSelector, ExternalSessionScanner,
+│                         HistoricalSessionScanner, AttentionService,
+│                         SessionCatalog, HubMouseGate, ProcessTree, ...
 ├── Launchers/            ScriptedHostLauncher (single launcher; every
 │                         host's behavior lives in its .applescript)
-└── UI/                   SwiftUI views (sidebar, tabs, dialogs, settings,
-│                         per-session info window, host editor, ...)
+└── UI/                   SwiftUI views — sidebar, tabs, dialogs, settings,
+                          per-session info, sessions dashboard, host editor
 Resources/
 ├── Info.plist            (generated by xcodegen)
 ├── ClaudeProjectHub.entitlements
@@ -92,11 +109,19 @@ The fast path:
 2. Pick the app, enter a display name. The hub auto-slugs an id and copies `_template.applescript` into `~/Library/Application Support/ClaudeProjectHub/scripts/<your-id>.applescript`
 3. Edit the script to fit how your host accepts a command. The bundled scripts in `Resources/Scripts/` cover the common patterns: CLI-spawnable terminals, IDEs driven by a keyboard shortcut, IDEs driven by a menu walk
 
-The full integration walkthrough — placeholder contract, AX-diff fallback for window discovery, the lessons baked into the existing scripts — will live in [`INTEGRATIONS_GUIDE.md`](INTEGRATIONS_GUIDE.md) (forthcoming).
+The full integration walkthrough — placeholder contract, return-value contract, AX-diff fallback for window discovery, and the lessons baked into the existing scripts — is in [`INTEGRATIONS_GUIDE.md`](INTEGRATIONS_GUIDE.md).
+
+## Docs
+
+- [`USER_GUIDE.md`](USER_GUIDE.md) — end-user flows: permissions, session lifecycle, docking, Get Info, notifications, Settings, where files live on disk, known quirks
+- [`INTEGRATIONS_GUIDE.md`](INTEGRATIONS_GUIDE.md) — adding a host: the placeholder + return-value contracts, three worked patterns, testing checklist
+- [`CLAUDE.md`](CLAUDE.md) — architecture, design decisions, hard-won gotchas, milestone state
 
 ## Contributing
 
 Read [`CLAUDE.md`](CLAUDE.md) first — it captures the design decisions, the gotchas we've already hit, and the current milestone state. Claude Code auto-loads that file when you open a session in this repo, so your AI collaborator will have the same context you do.
+
+Its "Lessons learned" section is worth reading before touching the AX layer specifically — several non-obvious behaviours (spurious destroy notifications during sleep/wake, CGWindowIDs changing across wake, the AX server transiently returning an application element where a window is expected) cost real debugging time to pin down and are documented so they don't have to be rediscovered.
 
 ## License
 

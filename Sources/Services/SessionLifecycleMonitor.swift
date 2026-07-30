@@ -188,11 +188,23 @@ final class SessionLifecycleMonitor: ObservableObject {
             // Catch the miss here by re-deriving on every poll cycle
             // for docked-but-tab-id-less sessions. Idempotent for
             // sessions that already have a tabID (we don't re-derive).
-            if dockController.dockedSessionIDs.contains(session.id),
-               !dockController.hasTabID(forSession: session.id),
-               let tty = ProcessTree.controllingTTY(of: pid) {
-                dockController.setTabID(sessionID: session.id, tabID: tty)
-                log.notice("Self-healed missing tabID for pid \(pid, privacy: .public) (tty=\(tty, privacy: .public))")
+            if !dockController.hasTabID(forSession: session.id) {
+                // Say why the heal didn't happen — a silently-skipped
+                // heal leaves the session permanently unable to switch
+                // tabs, which is indistinguishable from "no heal needed"
+                // in the logs.
+                let dockedCount = dockController.dockedSessionIDs.count
+                if !dockController.dockedSessionIDs.contains(session.id) {
+                    // Expected for any deliberately-undocked session, and
+                    // it repeats every poll — .debug so it doesn't drown
+                    // the log, but still available when investigating.
+                    log.debug("tabID heal skipped for \(session.id, privacy: .public) — not in dockedSessionIDs (docked=\(dockedCount, privacy: .public))")
+                } else if let tty = ProcessTree.controllingTTY(of: pid) {
+                    dockController.setTabID(sessionID: session.id, tabID: tty)
+                    log.notice("Self-healed missing tabID for pid \(pid, privacy: .public) (tty=\(tty, privacy: .public))")
+                } else {
+                    log.notice("tabID heal skipped for \(session.id, privacy: .public) — ProcessTree.controllingTTY(of: \(pid, privacy: .public)) returned nil")
+                }
             }
 
             // Refine status from Claude's per-process file.

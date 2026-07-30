@@ -15,6 +15,12 @@ enum AppleScriptError: Error, LocalizedError {
 }
 
 enum AppleScriptRunner {
+    /// Synchronous on the calling thread, which in practice is always
+    /// the main actor. A background serial queue was tried here to get
+    /// `HostTabSelector` off the click path, but running tab selection
+    /// detached broke the raise→select ordering the host depends on —
+    /// see the note in `HostTabSelector`. Kept simple until there's a
+    /// design that preserves that ordering.
     @discardableResult
     static func run(_ source: String) throws -> NSAppleEventDescriptor {
         guard let script = NSAppleScript(source: source) else {

@@ -690,9 +690,20 @@ final class SessionLauncherService: ObservableObject {
             // Capture the tab identifier (controlling tty) so a later
             // tab-switch in the hub can also flip the host's internal
             // tab via HostTabSelector. Critical for newTab launches
-            // that share a host window with sibling sessions.
-            if let tty = ProcessTree.controllingTTY(of: claudePID) {
+            // that share a host window with sibling sessions — without
+            // a tabID, `selectActiveTab` can't switch and every hub tab
+            // for that window shows whichever tab the host has current.
+            //
+            // Polled rather than read once: the kernel may not have
+            // assigned a controlling tty yet at this point, and a single
+            // nil read used to leave the session with no tabID until the
+            // lifecycle monitor's self-heal noticed up to 2s later —
+            // observed in the wild on a newTab launch, where clicking
+            // between the sibling tabs did nothing in the meantime.
+            if let tty = await waitForControllingTTY(of: claudePID) {
                 dockController.setTabID(sessionID: sessionID, tabID: tty)
+            } else {
+                launcherLog.notice("No controlling tty for claude pid \(claudePID, privacy: .public) after retries — leaving tabID for the lifecycle self-heal")
             }
             if let sessionFile = await ClaudeSessionFile.read(pid: claudePID, timeout: 5) {
                 // Set-once: `claude --resume <id>` assigns a NEW sessionId to
@@ -708,6 +719,24 @@ final class SessionLauncherService: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Polls for the process's controlling tty. A freshly-spawned claude
+    /// may not have one yet, and the tty is what identifies its *tab*
+    /// within a shared host window — so giving up after one read left
+    /// newTab sessions unable to switch tabs. Short budget: the tty
+    /// appears within a few hundred ms in practice, and the lifecycle
+    /// monitor's per-poll self-heal is the backstop if it doesn't.
+    private func waitForControllingTTY(
+        of pid: pid_t,
+        timeout: TimeInterval = 2
+    ) async -> String? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let tty = ProcessTree.controllingTTY(of: pid) { return tty }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return ProcessTree.controllingTTY(of: pid)
     }
 
     // MARK: - claude PID discovery

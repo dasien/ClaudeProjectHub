@@ -456,8 +456,14 @@ final class DockController: ObservableObject {
     /// window goes somewhere sensible. Pass `restoreFrame: false`
     /// when the user has already moved it themselves (drag-titlebar-
     /// out) and we don't want to fight their final position.
-    func undock(sessionID: Session.ID, restoreFrame: Bool = true) {
+    /// - Parameter reason: why this undock is happening. Logged, because
+    ///   an undock silently wipes the session's tabID/hostID/cgID and
+    ///   that made "the hub can't switch tabs anymore" impossible to
+    ///   trace — the undock is the damage, and several callers reach it
+    ///   without logging anything themselves.
+    func undock(sessionID: Session.ID, restoreFrame: Bool = true, reason: String = "unspecified") {
         guard dockedSessionIDs.contains(sessionID) else { return }
+        dockLog.notice("undock \(sessionID, privacy: .public) — \(reason, privacy: .public)")
 
         // Cancel any in-flight dock-in animation for this session
         // before we start a new undock animation or release the
@@ -508,7 +514,13 @@ final class DockController: ObservableObject {
     /// can derive its controlling tty), since dock() runs before that
     /// info is available.
     func setTabID(sessionID: Session.ID, tabID: String) {
-        guard dockedSessionIDs.contains(sessionID) else { return }
+        // The guard used to drop tabIDs silently, which is one of only
+        // two ways a session can end up unable to switch tabs — say so.
+        guard dockedSessionIDs.contains(sessionID) else {
+            dockLog.notice("setTabID REJECTED for \(sessionID, privacy: .public) tty=\(tabID, privacy: .public) — session is not in dockedSessionIDs")
+            return
+        }
+        dockLog.debug("setTabID accepted for \(sessionID, privacy: .public) tty=\(tabID, privacy: .public)")
         tabIDsBySession[sessionID] = tabID
     }
 
@@ -630,7 +642,7 @@ final class DockController: ObservableObject {
             }
         }
         for id in dangling {
-            undock(sessionID: id, restoreFrame: false)
+            undock(sessionID: id, restoreFrame: false, reason: "AX element dangling after display reconfiguration")
         }
         repositionAll()
     }
@@ -677,7 +689,7 @@ final class DockController: ObservableObject {
             // the AX destroy-notification handler uses; the binding's
             // gone for the same reason, just detected at use time
             // instead of via the AX observer.
-            undock(sessionID: id, restoreFrame: false)
+            undock(sessionID: id, restoreFrame: false, reason: "raise failed, element dangling (raiseActive)")
         }
     }
 
@@ -702,7 +714,7 @@ final class DockController: ObservableObject {
             if syncTab { selectActiveTab() }
         } else {
             // Dangling element — same cleanup as the destroy handler.
-            undock(sessionID: id, restoreFrame: false)
+            undock(sessionID: id, restoreFrame: false, reason: "raise failed, element dangling (raiseActiveWithoutFocus)")
         }
     }
 
@@ -711,10 +723,62 @@ final class DockController: ObservableObject {
     /// Doesn't activate the host app — `tell window to select tab`
     /// just changes the host's current tab without front-stealing.
     private func selectActiveTab() {
-        guard let id = activeSessionID,
-              let hostID = hostIDsBySession[id],
-              let tabID = tabIDsBySession[id] else { return }
-        HostTabSelector.selectTab(hostID: hostID, tabIdentifier: tabID)
+        guard let id = activeSessionID else { return }
+        // All three of these used to fail silently, which made "the hub
+        // shows the wrong tab" impossible to diagnose from outside. A
+        // missing hostID or tabID means no tab switch happens at all,
+        // so say which one is absent.
+        guard let hostID = hostIDsBySession[id] else {
+            dockLog.notice("selectActiveTab: no hostID cached for active session \(id, privacy: .public) — cannot switch tab")
+            return
+        }
+        guard let tabID = tabIDsBySession[id] ?? deriveTabID(for: id) else {
+            // Two very different reasons, worth different log levels.
+            // No pid yet is the normal state in the first moments of a
+            // launch or resume — `dock()` raises before
+            // `discoverAndBind` has identified the claude process, and
+            // the host has just focused that tab itself anyway, so
+            // there's nothing to correct. A session with a live pid but
+            // no resolvable tty is genuinely unexpected.
+            if let pid = store.sessions.first(where: { $0.id == id })?.pid {
+                dockLog.notice("selectActiveTab: session \(id, privacy: .public) has pid \(pid, privacy: .public) but no resolvable tty — cannot switch tab")
+            } else {
+                dockLog.debug("selectActiveTab: session \(id, privacy: .public) has no pid yet (launch in flight) — nothing to switch")
+            }
+            return
+        }
+        // Pass the cached CGWindowID so the script can address the
+        // window directly instead of walking every one of the host's
+        // windows. Nil is handled (falls back to the walk).
+        let windowID = cgIDsBySession[id]
+        dockLog.debug("selectActiveTab: host=\(hostID, privacy: .public) tty=\(tabID, privacy: .public) windowID=\(windowID.map(String.init) ?? "nil", privacy: .public)")
+        HostTabSelector.selectTab(
+            hostID: hostID,
+            tabIdentifier: tabID,
+            windowID: windowID
+        )
+    }
+
+    /// Last-resort tabID lookup: read the controlling tty straight from
+    /// the session's claude pid, and cache it.
+    ///
+    /// The tabID is normally captured by the launch flow, but only after
+    /// `waitForNewClaudePID` identifies the pid (up to 8s of polling) and
+    /// the kernel has assigned a tty. Clicking a tab inside that window
+    /// found no tabID and silently did nothing — reproducible as "the
+    /// first click on a just-created session doesn't switch the host
+    /// tab." Deriving on demand removes the dependency on capture
+    /// timing entirely; the launch-path capture and the lifecycle
+    /// self-heal are now optimisations rather than prerequisites.
+    ///
+    /// Cheap enough for the click path: one `sysctl` via `ProcessTree`,
+    /// and only when the cache misses.
+    private func deriveTabID(for sessionID: Session.ID) -> String? {
+        guard let pid = store.sessions.first(where: { $0.id == sessionID })?.pid,
+              let tty = ProcessTree.controllingTTY(of: pid) else { return nil }
+        tabIDsBySession[sessionID] = tty
+        dockLog.notice("Derived missing tabID on demand for \(sessionID, privacy: .public) — tty=\(tty, privacy: .public) from pid \(pid, privacy: .public)")
+        return tty
     }
 
     /// Debounced "the user stopped moving the hub" handler. While
@@ -980,18 +1044,32 @@ final class DockController: ObservableObject {
         // back into the dock rect — so a tear-out of a 2-tab window
         // appeared to snap back.
         let affected = sessionIDs(for: element)
-        // Resize is decisive — the user wants a different size than
-        // the dock allows. Undock without restoring (their size is
-        // what they want).
-        if current.size != dockRect.size {
-            for id in affected { undock(sessionID: id, restoreFrame: false) }
-            return
-        }
         let dx = current.origin.x - dockRect.origin.x
         let dy = current.origin.y - dockRect.origin.y
         let distance = (dx * dx + dy * dy).squareRoot()
+
+        // Only a *move* releases the dock. A resize never does.
+        //
+        // This used to undock on any size change ("the user wants a
+        // different size than the dock allows"), which broke as soon as
+        // a host resized itself: adding a second tab makes iTerm2 grow
+        // the window by its tab-bar height — measured at 35px here, and
+        // it varies with theme and host — so creating a sibling session
+        // tore the window out of the dock and took both sessions'
+        // tabIDs with it. Thresholding the delta just moved the magic
+        // number around; the tab bar is bigger than any threshold small
+        // enough to still catch a deliberate resize.
+        //
+        // A docked window is pinned, so its size belongs to the dock:
+        // snap it back and absorb host chrome changes of any size.
+        // Verified iTerm2 accepts being held at the dock height with
+        // two tabs open (it just gives the content area 35px less) and
+        // does not reassert, so this doesn't become a tug-of-war. The
+        // user can still tear out by dragging the titlebar, or undock
+        // explicitly from the sidebar's right-click menu.
         if distance > undockThreshold {
-            for id in affected { undock(sessionID: id, restoreFrame: false) }
+            dockLog.notice("evaluateDraggedDocked: dragged \(Int(distance), privacy: .public)px > \(Int(self.undockThreshold), privacy: .public)px — undocking \(affected.count, privacy: .public) session(s)")
+            for id in affected { undock(sessionID: id, restoreFrame: false, reason: "user dragged window out of dock rect") }
         } else {
             // Small drag — snap back to the dock rect. One write covers
             // every sibling; they're the same window. The setFrame is
@@ -1049,7 +1127,7 @@ final class DockController: ObservableObject {
             }
             dockLog.notice("Destroy confirmed — undocking \(affected.count, privacy: .public) session(s) bound to the destroyed window")
             for id in affected {
-                self.undock(sessionID: id, restoreFrame: false)
+                self.undock(sessionID: id, restoreFrame: false, reason: "host window destroyed")
                 // Release the WindowManager binding too. The element is
                 // dead, so holding it only produces failed raises — and
                 // the tab bar keys off boundSessionIDs to drop the tab

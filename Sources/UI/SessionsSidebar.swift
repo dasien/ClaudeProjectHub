@@ -157,7 +157,10 @@ struct SessionsSidebar: View {
             }
             if dockController.dockedSessionIDs.contains(session.id) {
                 Button("Undock") {
-                    dockController.undock(sessionID: session.id)
+                    dockController.undock(
+                        sessionID: session.id,
+                        reason: "user chose Undock from the sidebar menu"
+                    )
                 }
             } else {
                 Button("Dock") {

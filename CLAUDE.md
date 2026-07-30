@@ -210,6 +210,22 @@ Verified empirically: `CGWindowListCopyWindowInfo` returns iTerm2 as owner when 
 
 iTerm2's AppleScript dictionary properly supports `create window` / `create tab`, so the launcher is much simpler than Terminal's — no System Events keystroke trickery.
 
+### A host resizing itself is indistinguishable from a user resize — so never undock on resize
+
+Adding a second tab to an iTerm2 window makes iTerm2 grow the window by its tab-bar height (**35px** on one measured setup; it varies with theme, font and host). AX reports that as a resize the `AXWriteTracker` doesn't own — identical, at the AX layer, to the user dragging the resize corner. `evaluateDraggedDocked` used to undock on *any* size difference from the dock rect ("resize is decisive"), so creating a sibling session tore the window out of the dock. `undock()` clears `tabIDsBySession`, so the real damage was downstream: `selectActiveTab` then had no tty to give the host and silently did nothing, leaving every hub tab for that window showing whichever tab the host had current.
+
+Thresholding the delta does **not** work — that was tried and failed. The tab bar is larger than any threshold small enough to still catch a deliberate resize, and its height isn't a constant you can hard-code. The rule now: **a resize never undocks; only a move past `undockThreshold` does.** A docked window is pinned, so its size belongs to the dock — snap it back and absorb host chrome changes of any magnitude. Verified iTerm2 accepts being held at the dock height with two tabs open (it just gives the content area 35px less) and does not reassert, so this doesn't become a tug-of-war. Tear-out stays available via titlebar drag and the sidebar's explicit Undock.
+
+Note AX/CGWindow coordinates are in **points**, not physical pixels, so none of these numbers change with Retina scaling or monitor resolution.
+
+### The tab-select AppleScript must run synchronously, right after the raise
+
+`HostTabSelector`'s script was moved to a background serial queue to get ~70ms off the click path. It broke tab switching: `AXSupport.raise` is processed **asynchronously inside the host**, so a detached select could finish before the host was done handling the raise, after which the host reasserted its own current tab. Symptom: the correct tab flashes up and then snaps back to the most recently created one — distinctive, and *not* what a missing tabID looks like (that produces no switch at all, no flash).
+
+The ordering raise → select-to-completion is load-bearing. Don't make this async again without moving the raise onto the same queue so the two stay ordered. The safe half of that optimisation was kept: scoping the script to `window id <cgID>` instead of walking every window, which is where most of the cost was anyway (~170ms → ~70ms measured, since every AppleScript property access is a separate Apple Event). Both hosts' AppleScript `id of window` equals `kCGWindowNumber` — verified empirically against `CGWindowListCopyWindowInfo` for iTerm2 *and* Terminal — and a stale id fails cleanly with `-1728`.
+
+Related: don't let a session's tabID depend on capture timing. It's derived on demand from the session's pid in `selectActiveTab` now, so the launch-path capture and the lifecycle self-heal are optimisations, not prerequisites.
+
 ### Window title doesn't survive shell/claude
 
 For both Terminal and iTerm2, setting the tab/window title via AppleScript works *briefly* but the shell's first prompt and claude's startup print escape sequences that overwrite it within ~1 second. Don't rely on titles for AX binding when the host returns a window id directly. Use marker-in-title as a fallback only when no better option exists.

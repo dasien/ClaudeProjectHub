@@ -623,7 +623,7 @@ final class SessionLauncherService: ObservableObject {
     /// live-but-unraisable session (role reads succeed, window ops
     /// come back Unsupported).
     private func focusedWindow(of pid: pid_t) -> AXUIElement? {
-        let app = AXUIElementCreateApplication(pid)
+        let app = AXSupport.appElement(for: pid)
         var value: AnyObject?
         let err = AXUIElementCopyAttributeValue(
             app,

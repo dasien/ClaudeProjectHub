@@ -65,6 +65,9 @@ struct ClaudeProjectHubApp: App {
                 .frame(minWidth: 900, minHeight: 600)
                 .preferredColorScheme(preferredColorScheme)
                 .onAppear {
+                    // Bound how long any synchronous AX call can block
+                    // us, before anything starts issuing them.
+                    AXSupport.configureGlobalMessagingTimeout()
                     lifecycleMonitor.start()
                     externalScanner.start()
                     historicalScanner.start()

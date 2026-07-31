@@ -852,7 +852,7 @@ final class DockController: ObservableObject {
         // window one). Fires when the user clicks a different window
         // of this host — we use it to follow the selection.
         if !appFocusSubscribedPIDs.contains(pid) {
-            observer.subscribe(element: AXUIElementCreateApplication(pid), notifications: [
+            observer.subscribe(element: AXSupport.appElement(for: pid), notifications: [
                 AXNotification.focusedWindowChanged
             ])
             appFocusSubscribedPIDs.insert(pid)
@@ -900,7 +900,7 @@ final class DockController: ObservableObject {
     /// its focused window. No-op when the app isn't one we're docking.
     private func handleAppActivated(pid: pid_t) {
         guard observers[pid] != nil else { return }
-        guard let focused = AXSupport.focusedWindow(ofApplication: AXUIElementCreateApplication(pid)) else { return }
+        guard let focused = AXSupport.focusedWindow(ofApplication: AXSupport.appElement(for: pid)) else { return }
         handleExternalFocus(window: focused)
     }
 

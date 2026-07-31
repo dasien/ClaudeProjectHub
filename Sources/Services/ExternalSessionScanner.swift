@@ -30,6 +30,26 @@ final class ExternalSessionScanner: ObservableObject {
     private let store: SessionStore
     private let hostRegistry: HostRegistry
     private var timer: Timer?
+    /// Resolved host windows, keyed by claude pid.
+    ///
+    /// `HostWindowResolver.resolve` asks each running terminal host via
+    /// AppleScript which window holds a given tty, and every AppleScript
+    /// property access is a separate Apple Event — so one call walks
+    /// `windows → tabs → sessions` at real cost. This scanner runs every
+    /// 3s forever, which meant an external session the user never
+    /// adopted paid that walk ~20 times a minute indefinitely, and up to
+    /// twice per tick (iTerm2, then Terminal). A live pid's host window
+    /// doesn't change for the life of the process, so resolving once per
+    /// pid is enough.
+    ///
+    /// Only *successes* are cached. A failure usually means claude is in
+    /// a host that isn't in the registry, but it can also be transient
+    /// (the tty lookup racing a host still starting up), and retrying
+    /// costs no more than what we already did. Nothing here can cause a
+    /// wrong binding either way: `SessionLauncherService.adopt`
+    /// re-resolves from scratch at adopt time, so the worst a stale
+    /// entry can do is show an out-of-date host icon in the sidebar.
+    private var resolveCache: [pid_t: HostWindowResolver.Match] = [:]
 
     init(store: SessionStore, hostRegistry: HostRegistry) {
         self.store = store
@@ -64,9 +84,20 @@ final class ExternalSessionScanner: ObservableObject {
         let trackedPIDs: Set<pid_t> = Set(store.sessions.compactMap { $0.pid })
         let trackedSessionIds: Set<String> = Set(store.sessions.compactMap { $0.claudeSessionId })
 
+        // Live pids up front: used both to filter candidates and to
+        // evict resolve-cache entries for processes that have exited, so
+        // the cache can't grow across the app's lifetime.
+        let livePIDs: Set<pid_t> = Set(
+            files.compactMap { file -> pid_t? in
+                guard let pid = file.pid, pidIsAlive(pid_t(pid)) else { return nil }
+                return pid_t(pid)
+            }
+        )
+        resolveCache = resolveCache.filter { livePIDs.contains($0.key) }
+
         let candidates: [ExternalSession] = files.compactMap { file in
             guard let pid = file.pid,
-                  pidIsAlive(pid_t(pid)),
+                  livePIDs.contains(pid_t(pid)),
                   let cwdString = file.cwd else { return nil }
 
             // Filter out non-interactive / non-CLI variants. The
@@ -81,7 +112,7 @@ final class ExternalSessionScanner: ObservableObject {
             if trackedPIDs.contains(pid_t(pid)) { return nil }
             if trackedSessionIds.contains(file.sessionId) { return nil }
 
-            let match = HostWindowResolver.resolve(claudePID: pid_t(pid), registry: hostRegistry)
+            let match = resolvedMatch(forClaudePID: pid_t(pid))
             return ExternalSession(
                 claudeSessionId: file.sessionId,
                 pid: pid_t(pid),
@@ -99,6 +130,18 @@ final class ExternalSessionScanner: ObservableObject {
         let next = candidates.sorted { $0.cwd.lastPathComponent < $1.cwd.lastPathComponent }
         guard next != sessions else { return }
         self.sessions = next
+    }
+
+    /// Cached `HostWindowResolver.resolve`. See `resolveCache` for why
+    /// this is worth caching and why failures aren't cached.
+    private func resolvedMatch(forClaudePID pid: pid_t) -> HostWindowResolver.Match? {
+        if let cached = resolveCache[pid] { return cached }
+        guard let match = HostWindowResolver.resolve(
+            claudePID: pid,
+            registry: hostRegistry
+        ) else { return nil }
+        resolveCache[pid] = match
+        return match
     }
 
     /// `kill(pid, 0)` succeeds if the process exists and we have

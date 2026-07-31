@@ -15,8 +15,42 @@ private func _AXUIElementGetWindow(
 ) -> AXError
 
 enum AXSupport {
-    static func windows(of pid: pid_t) -> [AXUIElement] {
+    /// Upper bound on how long a synchronous AX call may block us.
+    ///
+    /// AX requests are serviced on the *target app's* run loop, so a
+    /// wedged host — a beachballing Electron or JBR window, an app
+    /// stuck in a modal — would otherwise stall the hub for AX's
+    /// multi-second default on every read or write, and the hub does
+    /// these on the main actor. 0.25s turns that into a fast failure,
+    /// which every caller already handles: they all treat a non-success
+    /// AXError as "couldn't do it" and move on. Same mitigation
+    /// AeroSpace and Amethyst use; fully public API.
+    private static let messagingTimeout: Float = 0.25
+
+    /// Application element with `messagingTimeout` applied. Prefer this
+    /// over `AXUIElementCreateApplication` directly — the timeout is
+    /// per-application, so setting it here bounds every message later
+    /// sent to that app, including to window elements obtained from it.
+    static func appElement(for pid: pid_t) -> AXUIElement {
         let app = AXUIElementCreateApplication(pid)
+        _ = AXUIElementSetMessagingTimeout(app, messagingTimeout)
+        return app
+    }
+
+    /// Applies `messagingTimeout` as this process's global AX default.
+    /// Backstop for elements we didn't create ourselves — AX observer
+    /// callbacks hand us window elements directly, and those wouldn't
+    /// pick up a per-app timeout unless we'd already created an app
+    /// element for that pid. Call once at launch.
+    static func configureGlobalMessagingTimeout() {
+        _ = AXUIElementSetMessagingTimeout(
+            AXUIElementCreateSystemWide(),
+            messagingTimeout
+        )
+    }
+
+    static func windows(of pid: pid_t) -> [AXUIElement] {
+        let app = appElement(for: pid)
         var value: AnyObject?
         let err = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
         guard err == .success, let array = value as? [AXUIElement] else { return [] }
@@ -237,7 +271,7 @@ enum AXSupport {
     @discardableResult
     static func pressMenuItem(in pid: pid_t, path: [String]) -> Bool {
         guard !path.isEmpty else { return false }
-        let app = AXUIElementCreateApplication(pid)
+        let app = appElement(for: pid)
 
         var menuBarValue: AnyObject?
         guard AXUIElementCopyAttributeValue(app, kAXMenuBarAttribute as CFString, &menuBarValue) == .success,

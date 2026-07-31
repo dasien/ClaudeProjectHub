@@ -9,6 +9,7 @@ import Foundation
 /// `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` is never
 /// modified. Reset from Settings → General → Hidden Sessions to
 /// recover.
+@MainActor
 final class DismissedHistoricalStore: ObservableObject {
     @Published private(set) var ids: Set<String> = []
 
@@ -73,7 +74,10 @@ final class DismissedHistoricalStore: ObservableObject {
         try? data.write(to: storeURL, options: .atomic)
     }
 
-    static var defaultStoreURL: URL {
+    // nonisolated for the same reason as SessionStore's: it's a default
+    // argument in `init` (a nonisolated position) and touches only
+    // FileManager.
+    nonisolated static var defaultStoreURL: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupport
             .appendingPathComponent("ClaudeProjectHub", isDirectory: true)

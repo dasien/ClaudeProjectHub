@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Combine
 
+@MainActor
 final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [Session] = []
     /// Sidebar selection lives here (not in a SwiftUI @State) so that
@@ -136,7 +137,10 @@ final class SessionStore: ObservableObject {
         try? data.write(to: storeURL, options: .atomic)
     }
 
-    private static var defaultStoreURL: URL {
+    // nonisolated: referenced from `init`'s default argument, which is
+    // a nonisolated context, and it only touches FileManager — no
+    // actor-isolated state to protect.
+    private nonisolated static var defaultStoreURL: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupport
             .appendingPathComponent("ClaudeProjectHub", isDirectory: true)

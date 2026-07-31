@@ -111,6 +111,41 @@ Run the project from Xcode. The first launch prompts for **Accessibility** acces
 
 `.xcodeproj/` is gitignored — it's regenerated from `project.yml`. Re-run `xcodegen` whenever you add or remove files in `Sources/`.
 
+## Releasing
+
+`project.yml` is the single source of truth for the version — `Info.plist`
+interpolates `$(MARKETING_VERSION)` and `$(CURRENT_PROJECT_VERSION)`, so the
+built app always matches what's declared there.
+
+```bash
+./install.sh --bump minor    # major | minor | patch | an explicit 1.2.3
+```
+
+That rewrites both settings in `project.yml`, then builds and installs as
+usual so you can verify the result before committing anything. It
+deliberately does **not** commit or tag — it prints the commands instead:
+
+```bash
+git add project.yml
+git commit -m "Release v0.9.0"
+git tag -a v0.9.0 -m "v0.9.0"
+git push && git push --tags
+```
+
+Conventions worth keeping:
+
+- **`MARKETING_VERSION`** (`0.9.0`) is the user-facing version. Bump the
+  minor for anything you'd describe to a user, the patch for fixes.
+- **`CURRENT_PROJECT_VERSION`** is a monotonic build counter — `--bump`
+  always increments it, and it should never go backwards.
+- **Tag every release** `vX.Y.Z`. There's no other record of what shipped
+  when, since there are no release artefacts to point at.
+
+Pre-`1.0` while three things are outstanding: there's no notarised build
+(so it can't be handed to a non-developer — see [Install](#install)), the
+Xcode host isn't implemented, and the app has only been exercised on the
+author's machine.
+
 ## Project layout
 
 ```

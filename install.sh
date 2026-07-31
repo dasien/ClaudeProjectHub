@@ -14,6 +14,7 @@
 #   ./install.sh                 # build + install to /Applications
 #   ./install.sh --prefix ~/Applications
 #   ./install.sh --no-open       # don't launch afterwards
+#   ./install.sh --bump minor    # major|minor|patch|X.Y.Z, then build
 #
 set -euo pipefail
 
@@ -22,6 +23,8 @@ cd "$REPO_ROOT"
 
 PREFIX="/Applications"
 OPEN_AFTER=1
+BUMP=""
+BUMPED_TO=""
 APP_NAME="ClaudeProjectHub.app"
 BUNDLE_ID="com.bgentry.ClaudeProjectHub"
 SCHEME="ClaudeProjectHub"
@@ -30,7 +33,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --prefix) PREFIX="${2:?--prefix needs a directory}"; shift 2 ;;
     --no-open) OPEN_AFTER=0; shift ;;
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's|^# \{0,1\}||'; exit 0 ;;
+    --bump) BUMP="${2:?--bump needs major|minor|patch|X.Y.Z}"; shift 2 ;;
+    -h|--help) sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's|^# \{0,1\}||'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -38,6 +42,49 @@ PREFIX="${PREFIX/#\~/$HOME}"
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 fail() { printf '\n\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
+
+# Validate --bump up front. This used to be checked inside bump_version,
+# which runs after the prerequisite checks and after quitting any running
+# copy — so a typo'd version quit the user's app and *then* errored.
+# Nothing destructive should happen before the arguments are known good.
+if [[ -n "$BUMP" && ! "$BUMP" =~ ^(major|minor|patch|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+  fail "--bump takes major, minor, patch, or an explicit X.Y.Z (got '$BUMP')"
+fi
+
+# Reads/writes the two version settings in project.yml, which are the
+# single source of truth — Info.plist interpolates them, so the built app
+# always matches. Deliberately does not commit or tag: those are yours to
+# make once you've verified the build.
+bump_version() {
+  local spec="$1" cur curbuild new newbuild major minor patch
+  cur="$(sed -n 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"\([^"]*\)".*/\1/p' project.yml | head -1)"
+  curbuild="$(sed -n 's/^[[:space:]]*CURRENT_PROJECT_VERSION:[[:space:]]*"\([^"]*\)".*/\1/p' project.yml | head -1)"
+  [[ -n "$cur" && -n "$curbuild" ]] \
+    || fail "couldn't read MARKETING_VERSION / CURRENT_PROJECT_VERSION from project.yml"
+  [[ "$cur" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || fail "MARKETING_VERSION '$cur' isn't X.Y.Z — bump it by hand this once."
+
+  IFS=. read -r major minor patch <<<"$cur"
+  case "$spec" in
+    major) new="$((major + 1)).0.0" ;;
+    minor) new="${major}.$((minor + 1)).0" ;;
+    patch) new="${major}.${minor}.$((patch + 1))" ;;
+    *)
+      [[ "$spec" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+        || fail "--bump takes major, minor, patch, or an explicit X.Y.Z (got '$spec')"
+      new="$spec"
+      ;;
+  esac
+  newbuild="$((curbuild + 1))"
+
+  # Anchored on the setting name with leading whitespace preserved, so
+  # this can't touch the identically-named keys in the info.properties
+  # block (those hold $(MARKETING_VERSION) references, not literals).
+  sed -i '' "s|^\([[:space:]]*\)MARKETING_VERSION:.*|\1MARKETING_VERSION: \"${new}\"|" project.yml
+  sed -i '' "s|^\([[:space:]]*\)CURRENT_PROJECT_VERSION:.*|\1CURRENT_PROJECT_VERSION: \"${newbuild}\"|" project.yml
+  echo "  ${cur} (build ${curbuild})  →  ${new} (build ${newbuild})"
+  BUMPED_TO="$new"
+}
 
 # ── Prerequisites ────────────────────────────────────────────────────
 step "Checking prerequisites"
@@ -86,6 +133,13 @@ if pgrep -x "$SCHEME" >/dev/null 2>&1; then
   done
   pgrep -x "$SCHEME" >/dev/null 2>&1 && fail "couldn't quit the running copy — quit it manually and re-run."
   echo "  quit"
+fi
+
+# ── Version ──────────────────────────────────────────────────────────
+# Before xcodegen, so the regenerated Info.plist picks up the new values.
+if [[ -n "$BUMP" ]]; then
+  step "Bumping version"
+  bump_version "$BUMP"
 fi
 
 # ── Build ────────────────────────────────────────────────────────────
@@ -169,6 +223,20 @@ Re-run this script any time to update the installed copy. Because you
 signed it with your own team ($TEAM), your granted permissions persist
 across rebuilds.
 EOF
+
+if [[ -n "$BUMPED_TO" ]]; then
+  cat <<EOF
+$(printf '\033[1mVersion bumped — project.yml is modified but not committed.\033[0m')
+
+Once you've confirmed the build works:
+
+  git add project.yml
+  git commit -m "Release v${BUMPED_TO}"
+  git tag -a "v${BUMPED_TO}" -m "v${BUMPED_TO}"
+  git push && git push --tags
+
+EOF
+fi
 
 if [[ "$OPEN_AFTER" == "1" ]]; then
   step "Launching"

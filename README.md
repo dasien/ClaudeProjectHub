@@ -42,17 +42,53 @@ Adding a host the hub doesn't ship with (Ghostty, WezTerm, kitty, …) is a no-c
 - Xcode 16+
 - [xcodegen](https://github.com/yonaskolb/XcodeGen) — `brew install xcodegen`
 
-## Build
+## Install
+
+There's no downloadable binary. Each developer builds and signs their own
+copy — which sounds like a limitation but is the right model for this app:
+macOS ties Accessibility and Automation grants to the code signature, so a
+copy **you** signed keeps its permissions across rebuilds. A binary signed
+by someone else would need notarisation (a paid Apple Developer membership)
+and would still have to ask for its own grants anyway.
 
 ```bash
 git clone git@github.com:dasien/ClaudeProjectHub.git
 cd ClaudeProjectHub
 brew install xcodegen                          # one-time
 cp signing.xcconfig.example signing.xcconfig   # one-time per checkout
-$EDITOR signing.xcconfig                       # fill in your DEVELOPMENT_TEAM
-xcodegen                                       # regenerate .xcodeproj from project.yml
+$EDITOR signing.xcconfig                       # add your Team ID (see below)
+./install.sh
+```
+
+`install.sh` checks your prerequisites, builds Release, verifies the
+signature and entitlements, and installs to `/Applications`. Then launch it
+and right-click its Dock icon → **Options → Keep in Dock**. Re-run the
+script any time to update your installed copy; your granted permissions
+persist because the signature doesn't change.
+
+```bash
+./install.sh --prefix ~/Applications   # no admin rights needed
+./install.sh --no-open                 # don't launch afterwards
+./install.sh --help
+```
+
+On first launch you'll be asked for **Accessibility** (to focus, move and
+close host windows) and then **Automation** once per host the first time
+you target it. Both are required — see [Permissions on first launch](USER_GUIDE.md#permissions-on-first-launch) for what each one is for and how to unstick them.
+
+## Build (for working on the app)
+
+To develop rather than just install, open the project in Xcode and run from
+there:
+
+```bash
+xcodegen                        # regenerate .xcodeproj from project.yml
 open ClaudeProjectHub.xcodeproj
 ```
+
+Note that an Xcode-run debug build and an installed `/Applications` copy are
+separate apps as far as macOS permissions are concerned, so each asks for
+its own grants.
 
 `signing.xcconfig` is per-developer and gitignored. Your Team ID is in **Xcode → Settings → Accounts → your Apple ID → the "Team ID" column**, or from the command line as the `OU` field of your certificate:
 

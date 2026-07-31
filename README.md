@@ -32,7 +32,7 @@ Pre-configured. The New Session picker filters to whichever of these you actuall
 - **Terminal.app**
 - **iTerm2**
 - **JetBrains IDEs**: IntelliJ IDEA, PyCharm, WebStorm, PhpStorm, RubyMine, CLion, GoLand, Rider, Android Studio
-- **Visual Studio Code** — registered in the host list, but **its launch script isn't bundled yet**. The hub falls back to the template stub, so launching a VSCode session won't do anything useful until someone writes `Resources/Scripts/visual-studio-code.applescript`. Docking and adopting an *already-running* VSCode session works.
+- **Visual Studio Code** — one caveat: on the **first** launch into a folder VSCode hasn't seen before, it shows its "Do you trust the authors of the files in this folder?" prompt. That prompt is drawn *inside* the window rather than as a separate one, so the hub can't tell it apart from a loaded workspace and its keystrokes land on the dialog instead of a terminal. If a VSCode session launch appears to do nothing, accept the trust prompt in VSCode and launch the session again. Subsequent launches into that folder work normally. See [Common quirks](USER_GUIDE.md#common-quirks).
 
 Adding a host the hub doesn't ship with (Ghostty, WezTerm, kitty, …) is a no-code change — see [Adding a host](#adding-a-host) below.
 

@@ -207,6 +207,16 @@ Some apps need a moment to settle after the hub asks them to come forward. Click
 
 iTerm2 returns the same `CGWindowID` for every tab in a window. The hub identifies each session by its controlling tty and switches the host's internal tab via AppleScript when you switch sessions in the hub. If the wrong tab activates, file an issue with the tabs' contents and order.
 
+### A VSCode session launch did nothing
+
+Almost always VSCode's workspace-trust prompt — "Do you trust the authors of the files in this folder?" — which appears the first time you open a folder VSCode hasn't seen before.
+
+Accept the prompt in VSCode, then launch the session again from the hub. Launches into that folder work normally from then on.
+
+Why the hub can't just handle it: VSCode draws that prompt *inside* its window rather than as a separate window, so the window title already shows the folder name and the hub's "is the workspace loaded?" check can't distinguish the two. The keystrokes it sends to open a terminal land on the dialog instead. Detecting it would mean pattern-matching Electron's internal view tree, which breaks on VSCode updates — so the hub deliberately doesn't try.
+
+If the trust prompt *isn't* what you're seeing, check that "Terminal: Create New Terminal" is still bound to its default Ctrl+Shift+` in VSCode's keyboard shortcuts. If you've remapped it, edit the `key code 50 using {control down, shift down}` line in `~/Library/Application Support/ClaudeProjectHub/scripts/visual-studio-code.applescript`.
+
 ### A bundled launch script update didn't take effect
 
 User scripts in `~/Library/Application Support/ClaudeProjectHub/scripts/` are never automatically overwritten — once a file is in your scripts directory, it stays. To pick up an updated bundled script:

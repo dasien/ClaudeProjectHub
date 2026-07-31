@@ -54,7 +54,15 @@ xcodegen                                       # regenerate .xcodeproj from proj
 open ClaudeProjectHub.xcodeproj
 ```
 
-`signing.xcconfig` is per-developer and gitignored. Find your Apple Developer team ID via `security find-identity -v -p codesigning` (paid teams) or Xcode → Settings → Accounts (Personal Teams from a free Apple ID).
+`signing.xcconfig` is per-developer and gitignored. Your Team ID is in **Xcode → Settings → Accounts → your Apple ID → the "Team ID" column**, or from the command line as the `OU` field of your certificate:
+
+```bash
+security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject
+# subject=UID=…, CN=Apple Development: you@example.com (AAAAAAAAAA), OU=BBBBBBBBBB, …
+#                                                                      ^^^^^^^^^^ Team ID
+```
+
+> **Don't use the parenthesised string from `security find-identity`.** On an *Apple Development* certificate that's a certificate identifier, not the Team ID, and building with it fails with `No Account for Team "…"`. It only happens to be the Team ID on a *Developer ID Application* certificate, which is what makes this an easy mistake.
 
 Two things that will bite you if you do these out of order:
 

@@ -1,16 +1,45 @@
 // Per-developer signing configuration.
 //
-// Setup: copy this file to `signing.xcconfig` (gitignored) and fill
-// in your Apple Developer team ID below. Then run `xcodegen` and
-// build.
+// Setup: copy this file to `signing.xcconfig` (gitignored), put your
+// Apple Developer Team ID below, then run `xcodegen` and build.
 //
-// Finding your team ID:
-//   - Paid teams: run `security find-identity -v -p codesigning`;
-//     the team ID is the 10-character string in parentheses after
-//     the certificate name.
-//   - Personal Teams (free Apple ID): not shown in find-identity
-//     but visible in Xcode → Settings → Accounts → your Apple ID →
-//     Manage Certificates. The team ID is shown next to your name
-//     in the team selector.
+// ─── Finding your Team ID ───
+//
+// Authoritative source, works for every account type:
+//   Xcode → Settings → Accounts → select your Apple ID → the "Team ID"
+//   column in the team list.
+//
+// From the command line, the Team ID is the **OU** field of your signing
+// certificate:
+//
+//   security find-certificate -c "Apple Development" -p \
+//     | openssl x509 -noout -subject
+//
+//   subject=UID=…, CN=Apple Development: you@example.com (AAAAAAAAAA),
+//           OU=BBBBBBBBBB, O=Your Name, C=US
+//                ^^^^^^^^^^ this is your Team ID
+//
+// ⚠️  Do NOT use the 10-character string in parentheses after the
+// certificate name in `security find-identity` output. For an "Apple
+// Development" certificate that parenthetical is a *certificate*
+// identifier, not the Team ID — they're different values, and using it
+// produces a build that fails with:
+//
+//   error: No Account for Team "…". Add a new account in Accounts
+//   settings or verify that your accounts have valid credentials.
+//
+// (The parenthetical *is* the Team ID for a "Developer ID Application"
+// certificate, which is why this trips people up.)
+//
+// ─── Why this file exists ───
+//
+// Use a real team rather than ad-hoc signing ("-"). macOS ties
+// Accessibility and Automation grants to the code signature, so ad-hoc
+// builds get re-signed on every build and lose their permissions each
+// time. A stable team means you grant permissions once.
+//
+// After editing this file, re-run `xcodegen` — it bakes DEVELOPMENT_TEAM
+// into the generated project — then close and reopen the project in Xcode
+// so it rereads it.
 
 DEVELOPMENT_TEAM = YOUR_TEAM_ID

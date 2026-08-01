@@ -1,0 +1,78 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (Release)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to latest-stable rather than the documented minimum. The
+      # app has only ever been built on Xcode 26.x, so validating an
+      # older floor would mean chasing a 10-version gap for no benefit —
+      # if the supported floor ever matters, test it deliberately rather
+      # than discovering it here.
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - run: brew install xcodegen
+
+      # xcodegen fails outright without this file ("invalid config file
+      # path") because project.yml references it for both configs, and
+      # it's gitignored since it holds a per-developer team id. The
+      # placeholder team inside is harmless with signing disabled.
+      - name: Stub signing config
+        run: cp signing.xcconfig.example signing.xcconfig
+
+      - run: xcodegen
+
+      # No signing in CI: there's no certificate and no team, and the
+      # distribution model is that each developer signs their own copy.
+      # This proves the code compiles, not that it can be shipped.
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ClaudeProjectHub.xcodeproj \
+            -scheme ClaudeProjectHub \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+  scripts:
+    name: Launch scripts compile
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Covers something a local build never does: a syntax error in a
+      # host's .applescript otherwise surfaces only when a user launches
+      # a session into that host.
+      - run: ./tools/check-scripts.sh
+
+  docs:
+    name: Doc links resolve
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Broken #anchors render as a silent no-op on GitHub, so nothing
+      # else catches them.
+      - run: ./tools/check-doc-links.sh

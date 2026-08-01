@@ -4,6 +4,8 @@
   <img src="logos/export/iteration-8-1024x512.png" alt="Claude Project Hub" width="520">
 </p>
 
+[![Build](https://github.com/dasien/ClaudeProjectHub/actions/workflows/build.yml/badge.svg)](https://github.com/dasien/ClaudeProjectHub/actions/workflows/build.yml)
+
 A native macOS app that gives you one place to manage Claude Code sessions across whichever terminal or IDE launches them. Discover, focus, close, and resume sessions — without reinventing the terminal.
 
 ## Why
@@ -39,7 +41,7 @@ Adding a host the hub doesn't ship with (Ghostty, WezTerm, kitty, …) is a no-c
 ## Development Requirements
 
 - macOS 14+ (developed against macOS 26)
-- Xcode 16+
+- Xcode 26+ — the only version this has been built with, and what CI uses. Older Xcodes may work but are untested; the previous "16+" claim was never verified.
 - [xcodegen](https://github.com/yonaskolb/XcodeGen) — `brew install xcodegen`
 
 ## Install

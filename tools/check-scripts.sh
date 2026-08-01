@@ -23,11 +23,20 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# Colon-separated app names whose dictionary is known-unavailable in this
+# environment, treated as absent even if the bundle is on disk. Set by CI
+# after probing, because the two are not the same thing: a cask-installed
+# iTerm.app sat in /Applications while osacompile still could not resolve
+# `create window with default profile`, so a disk check alone reported a
+# failure nobody could act on.
+NO_DICT="${CPH_SCRIPT_CHECK_NO_DICT:-}"
+
 # Deliberately a filesystem lookup rather than `path to application`:
 # that hung for over two minutes on one installed app while probing
 # Launch Services, which is not acceptable in a check script.
 app_installed() {
   local name="$1" dir
+  case ":$NO_DICT:" in *":$name:"*) return 1 ;; esac
   for dir in /Applications /Applications/Utilities "$HOME/Applications" \
              /System/Applications /System/Applications/Utilities; do
     [[ -d "$dir/$name.app" ]] && return 0

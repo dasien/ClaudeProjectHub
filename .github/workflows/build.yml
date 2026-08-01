@@ -72,11 +72,31 @@ jobs:
       # Terminal is preinstalled, VSCode exposes no dictionary at all, and
       # the JetBrains scripts drive their IDEs through System Events.
       #
-      # Best-effort on purpose: if the cask ever breaks, check-scripts.sh
-      # reports iterm2.applescript as SKIP instead of failing the job.
+      # Best-effort on purpose: if any of this breaks, the canary below
+      # tells check-scripts.sh to skip iterm2.applescript rather than fail.
+      # The first attempt at this did fail — the cask installed the bundle
+      # but osacompile still couldn't load its dictionary, and a disk check
+      # can't tell those apart, so measure it instead of assuming.
       - name: Install iTerm2 (for its scripting dictionary)
         continue-on-error: true
-        run: brew install --cask iterm2
+        run: |
+          brew install --cask iterm2 || true
+          # A freshly copied bundle isn't necessarily known to Launch
+          # Services, which is how AppleScript resolves an app by name.
+          LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+          [[ -x "$LSREG" ]] && "$LSREG" -f /Applications/iTerm.app || true
+
+      # Compile-only probe of the exact construct that needs the
+      # dictionary. osacompile never executes, so this can't start iTerm2.
+      - name: Probe iTerm2 terminology
+        run: |
+          if osacompile -o /dev/null \
+               -e 'tell application "iTerm" to create window with default profile' 2>/dev/null; then
+            echo "iTerm2 terminology resolves — iterm2.applescript will be checked."
+          else
+            echo "CPH_SCRIPT_CHECK_NO_DICT=iTerm" >> "$GITHUB_ENV"
+            echo "::warning::iTerm2 scripting dictionary unavailable on this runner; iterm2.applescript will be reported as SKIP, not verified."
+          fi
 
       # Covers something a local build never does: a syntax error in a
       # host's .applescript otherwise surfaces only when a user launches

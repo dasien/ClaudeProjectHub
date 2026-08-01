@@ -63,6 +63,21 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
+      # osacompile resolves app-specific terminology out of the target
+      # app's scripting dictionary, so iterm2.applescript cannot compile
+      # without iTerm2 present ("create window with default profile" is a
+      # syntax error otherwise). It's the one bundled script that leans on
+      # a real dictionary, and the one worth paying a cask download for —
+      # Terminal is preinstalled, VSCode exposes no dictionary at all, and
+      # the JetBrains scripts drive their IDEs through System Events.
+      #
+      # Best-effort on purpose: if the cask ever breaks, check-scripts.sh
+      # reports iterm2.applescript as SKIP instead of failing the job.
+      - name: Install iTerm2 (for its scripting dictionary)
+        continue-on-error: true
+        run: brew install --cask iterm2
+
       # Covers something a local build never does: a syntax error in a
       # host's .applescript otherwise surfaces only when a user launches
       # a session into that host.

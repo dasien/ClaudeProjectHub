@@ -368,6 +368,27 @@ That rewrites both settings then builds and installs, so the result is verifiabl
 
 Note the `sed` in `bump_version` is anchored on leading whitespace plus the setting name specifically so it can't rewrite the identically-named `info.properties` keys, which hold references rather than literals.
 
+### CI
+
+`.github/workflows/build.yml` runs three independent jobs on `macos-latest`:
+
+1. **Build (Release)** — `xcodegen` then `xcodebuild` with signing disabled (`CODE_SIGNING_ALLOWED=NO`). It proves the code compiles, not that it can ship: there's no certificate in CI and the distribution model is that each developer signs their own copy. Note it must `cp signing.xcconfig.example signing.xcconfig` first, because `project.yml` references that gitignored file for both configs and `xcodegen` fails outright without it.
+2. **Launch scripts compile** — `tools/check-scripts.sh`, which catches something no build does: a syntax error in a host's `.applescript` otherwise surfaces only when a user launches a session into that host.
+3. **Doc links resolve** — `tools/check-doc-links.sh`. Broken `#anchors` are a silent no-op on GitHub, so nothing else catches them.
+
+`xcode-version` is pinned to `latest-stable` rather than the documented floor. The app has only ever been built on Xcode 26.x, so validating an older minimum would mean chasing a ten-version gap for no benefit — if the supported floor ever matters, test it deliberately.
+
+**Gotcha that cost two red runs — `osacompile` needs the target app installed to resolve its terminology.** App-specific verbs and classes come out of the app's scripting dictionary, so `create window with default profile` is a *syntax* error (`-2741`, "found class name") when iTerm2 is absent, which it is on a fresh runner. Scripts using only generic terminology compile fine with their app missing — which is why all nine JetBrains scripts pass in CI (they drive the IDE through System Events keystrokes) and `iterm2.applescript` didn't. So a compile failure is only meaningful when every app the script `tell`s is installed; `check-scripts.sh` reports **SKIP** otherwise.
+
+The second red run is the more instructive one: the job installs the iTerm2 cask so the one script that leans on a real dictionary gets covered, that install *succeeded*, and it still failed — because **bundle-on-disk is not the same as terminology-resolvable**. AppleScript resolves an app by name through Launch Services, and a freshly copied bundle isn't necessarily registered, so a filesystem check said "installed", declined to skip, and reported an unactionable failure.
+
+Two changes settled it. `lsregister -f /Applications/iTerm.app` after the cask install is what actually fixed it — CI now reports `13 compiled, 0 skipped, 0 failed`, so `iterm2.applescript` is genuinely verified rather than waved through. On top of that the job compiles a one-line canary using the construct that needs the dictionary and, if it fails, exports `CPH_SCRIPT_CHECK_NO_DICT=iTerm` plus a workflow warning so `check-scripts.sh` skips that script instead of going red for a reason local to the runner. That escape hatch is a dormant safety net — if it ever starts firing, the warning says so out loud rather than quietly shrinking coverage. (`osacompile` only compiles, so the canary can't launch the app.)
+
+Two smaller traps baked into that script:
+
+- It substitutes the hub's placeholders before compiling, because a script may legitimately use one as a bare value (`window id {targetWindowID}`) that isn't valid AppleScript until substituted.
+- Installation is a **filesystem lookup, not `path to application`** — the latter hung for over two minutes on an installed app while probing Launch Services.
+
 ## Permissions on first run
 
 The hub requires:

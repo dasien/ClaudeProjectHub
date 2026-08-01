@@ -202,6 +202,15 @@ The full integration walkthrough — placeholder contract, return-value contract
 
 Read [`CLAUDE.md`](CLAUDE.md) first — it captures the design decisions, the gotchas we've already hit, and the current milestone state. Claude Code auto-loads that file when you open a session in this repo, so your AI collaborator will have the same context you do.
 
+CI runs a Release build plus two checks you can run locally before pushing:
+
+```bash
+./tools/check-scripts.sh      # every bundled .applescript compiles
+./tools/check-doc-links.sh    # internal doc links and #anchors resolve
+```
+
+`check-scripts.sh` reports **SKIP** for a host you don't have installed — `osacompile` needs an app's scripting dictionary to resolve its terminology, so it can't verify a script for an app that isn't there.
+
 Its "Lessons learned" section is worth reading before touching the AX layer specifically — several non-obvious behaviours (spurious destroy notifications during sleep/wake, CGWindowIDs changing across wake, the AX server transiently returning an application element where a window is expected) cost real debugging time to pin down and are documented so they don't have to be rediscovered.
 
 ## License

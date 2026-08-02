@@ -123,7 +123,7 @@ When a session transitions from **working** → **idle** — i.e. Claude is sitt
 - Pulses a red attention badge on the session's sidebar row
 - If the hub isn't the frontmost app, posts a macOS notification with the session's name. Clicking the notification focuses that session.
 
-The hub asks for **Notifications** permission the first time a session would notify; grant it once.
+The hub asks for **Notifications** permission on first launch; grant it once. If you never saw that prompt, or the badge pulses but no banner appears, see [The attention badge works but no notification banner appears](#the-attention-badge-works-but-no-notification-banner-appears).
 
 Toggle the whole thing in **Settings → General → Notify when a session goes idle**.
 
@@ -226,3 +226,24 @@ rm ~/Library/Application\ Support/ClaudeProjectHub/scripts/<name>.applescript
 ```
 
 Then relaunch the hub; it'll re-copy from the bundle. (A future version will detect "user hasn't customized this" via SHA hash and update transparently in that case.)
+
+### The attention badge works but no notification banner appears
+
+Two independent settings can each cause this, and fixing only the first leaves you looking at nothing.
+
+Open **System Settings → Notifications → Claude Project Hub** and check both:
+
+1. **Allow Notifications** is on.
+2. The style below it is **Banners** or **Alerts**, not **None**. With **None**, notifications are still delivered — they just go straight into Notification Center with nothing on screen. Click the clock to check; if they're piling up there, this is your problem.
+
+**If the hub never asked you for notification permission at all**, macOS is holding an earlier "Don't Allow" against it. It only ever prompts once, so the app can't re-ask and the Settings toggle is the only way back. This is easy to hit if you've also run the app from Xcode — that build shares the bundle identifier, so a denial there follows the installed copy. For the same reason you may see **two "Claude Project Hub" entries** in the Notifications list, one per install location; they're indistinguishable, so set both the same way. The stale one is harmless.
+
+To confirm what the app is actually seeing:
+
+```bash
+/usr/bin/log show --last 10m \
+  --predicate 'subsystem == "com.bgentry.ClaudeProjectHub" AND category == "Notify"' \
+  --style compact
+```
+
+`authorization status before request: 2` means authorized (`0` = will prompt, `1` = denied — use System Settings). A `posted banner for …` line means the hub did its part and anything still missing is a macOS display setting. Use the full `/usr/bin/log` path; a shell function named `log` will otherwise shadow it and print nothing at all.

@@ -270,6 +270,25 @@ Also: `AXSupport.raise` sets `kAXMain` + `kAXFocused` before `AXRaise` (original
 
 Maps `AXUIElement` → `CGWindowID`. Used to bridge between AX-discovered windows and AppleScript-returned ids. Widely used by automation tools, stable across macOS versions, and **distinct from SkyLight private APIs** (which we deliberately avoid). See the declaration in `Sources/Services/AXSupport.swift`.
 
+### Notification authorization: `com.apple.ncprefs` is a stale decoy on macOS 26
+
+Symptom (hit twice — after a re-sign, then again on the first installed Release build): the in-app attention badge works, no banners ever appear, and **no permission prompt is ever shown**. The cause is ordinary — a "Don't Allow" recorded against `com.bgentry.ClaudeProjectHub`, most likely answered once against an Xcode build, since the bundle id is shared. macOS only prompts once, so `requestAuthorization` can never recover from it; it fails with `Notifications are not allowed for this application` and `authorizationStatus == .denied (1)`. **The only fix is the System Settings toggle** — nothing in code can undo it.
+
+What made this expensive is where you look. **`~/Library/Preferences/com.apple.ncprefs.plist` is legacy and no longer written** (the local copy was last touched Sep 2025 and lists 82 apps, none of them ours). Reading it "proved" the hub was unregistered, which is false and sent the whole investigation after a phantom. The live store is `~/Library/Group Containers/group.com.apple.usernoted/db2/db`, which is **TCC-protected — unreadable without Full Disk Access**, so the ground truth is the System Settings UI. Ask the user what they see there before inferring anything from disk. Two entries appear, one per path (the DerivedData Xcode build and `/Applications`), because they share a bundle id; the stale one is cosmetic.
+
+Also two separate switches, and only fixing the first leaves you still looking at nothing: **"Allow Notifications" and the alert style are independent.** An entry restored from a denial comes back with style **None**, which delivers to Notification Center with no banner on screen. `usernoted` says this plainly — `Presenting <…> as none` while the destinations still list `.alert` — so read the presentation verb, not the destination list.
+
+Diagnosis is now one command, because `AttentionService` logs the authorization status, the request result, and every `add()` outcome (that path used to swallow its error with `{ _, _ in }`, which is the entire reason this was invisible):
+
+```bash
+/usr/bin/log show --last 10m --predicate 'subsystem == "com.bgentry.ClaudeProjectHub" AND category == "Notify"' --style compact
+# status 0 = notDetermined (will prompt), 1 = denied (System Settings only), 2 = authorized
+```
+
+Use the **absolute path** — `log` is shadowed by a shell function in at least one contributor's profile, and the shadowed version silently returns nothing, which reads exactly like "the app logged nothing."
+
+Ruling things out by A/B against a minimal signed app was what finally isolated it: a throwaway `.app` with a fresh bundle id prompted normally, and still prompted when given the hub's exact entitlements (including `get-task-allow`, which Release builds do carry) and then its exact Info.plist. That eliminated signing, hardened runtime, entitlements, install location and Info.plist in three cheap tests and left the bundle id as the only variable. Worth repeating rather than theorising, since two plausible-sounding theories (`get-task-allow`, duplicate Launch Services registrations) were both wrong.
+
 ---
 
 ## Project layout

@@ -1,7 +1,10 @@
 import AppKit
 import Combine
 import Foundation
+import OSLog
 import UserNotifications
+
+private let notifyLog = Logger(subsystem: "com.bgentry.ClaudeProjectHub", category: "Notify")
 
 /// Tracks which docked sessions need the user's attention — i.e.
 /// transitioned from `.working` to `.idle` (claude is waiting for
@@ -100,11 +103,20 @@ final class AttentionService: NSObject, ObservableObject {
     /// macOS only shows the prompt the first time; subsequent calls
     /// just read the current authorization state.
     func requestAuthorizationIfNeeded() {
-        UNUserNotificationCenter.current().requestAuthorization(
-            options: [.alert, .sound]
-        ) { _, _ in
-            // Errors here are non-fatal — the in-app indicator works
-            // regardless of notification permission.
+        let center = UNUserNotificationCenter.current()
+        // Log the pre-existing state as well as the result. A silent
+        // failure here is indistinguishable from "user said no" without
+        // it, and the two need completely different fixes — this path
+        // once went dead after a re-sign with no way to tell why.
+        center.getNotificationSettings { settings in
+            notifyLog.notice("authorization status before request: \(settings.authorizationStatus.rawValue, privacy: .public)")
+        }
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            if let error {
+                notifyLog.error("requestAuthorization failed: \(error.localizedDescription, privacy: .public)")
+            } else {
+                notifyLog.notice("requestAuthorization granted=\(granted, privacy: .public)")
+            }
         }
     }
 
@@ -191,7 +203,13 @@ final class AttentionService: NSObject, ObservableObject {
             content: content,
             trigger: nil
         )
-        UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                notifyLog.error("posting banner failed: \(error.localizedDescription, privacy: .public)")
+            } else {
+                notifyLog.notice("posted banner for \(session.displayTitle, privacy: .public)")
+            }
+        }
     }
 }
 

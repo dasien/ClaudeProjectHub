@@ -45,6 +45,12 @@ struct SessionRow: View {
                             .foregroundStyle(.secondary)
                             .help("Free-floating — right-click → Dock to re-attach")
                     }
+                    if attention.cacheExpiring.contains(session.id) {
+                        Image(systemName: "clock.badge.exclamationmark")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .help("Prompt cache is expiring — your next message will pay to rebuild the context")
+                    }
                 }
                 HStack(spacing: 4) {
                     if let host = hostRegistry.host(forID: session.hostID) {

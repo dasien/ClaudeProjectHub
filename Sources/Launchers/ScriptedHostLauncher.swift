@@ -37,7 +37,8 @@ struct ScriptedHostLauncher: SessionLauncher {
         in cwd: URL,
         mode: WindowMode,
         targetWindowID: CGWindowID?,
-        claudeArgs: [String]
+        claudeArgs: [String],
+        claudeEnv: [String: String] = [:]
     ) async throws -> LaunchResult {
         guard isAvailable() else {
             throw LauncherError.launchFailed(
@@ -57,7 +58,7 @@ struct ScriptedHostLauncher: SessionLauncher {
         }
 
         let marker = "ClaudeProjectHub-\(UUID().uuidString)"
-        let claudeCmd = ShellCommand.claudeInvocation(args: claudeArgs)
+        let claudeCmd = ShellCommand.claudeInvocation(args: claudeArgs, env: claudeEnv)
 
         // For newTab mode the script's `keystroke`/`tell current window`
         // logic targets whatever window the OS considers front. AX-raise

@@ -29,7 +29,8 @@ protocol SessionLauncher {
         in cwd: URL,
         mode: WindowMode,
         targetWindowID: CGWindowID?,
-        claudeArgs: [String]
+        claudeArgs: [String],
+        claudeEnv: [String: String]
     ) async throws -> LaunchResult
 }
 

@@ -12,6 +12,7 @@ struct NewSessionDialog: View {
     @State private var hostID: String = "terminal-app"
     @State private var windowMode: WindowMode = .newWindow
     @State private var targetSessionID: Session.ID?
+    @State private var cacheTTL: PromptCacheTTL = .fiveMinutes
     @State private var isLaunching = false
     @FocusState private var nameFocused: Bool
 
@@ -154,6 +155,23 @@ struct NewSessionDialog: View {
                 }
             }
 
+            LabeledContent("Prompt cache:") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker("", selection: $cacheTTL) {
+                        ForEach(PromptCacheTTL.allCases) { ttl in
+                            Text(ttl.displayName).tag(ttl)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    Text("How long Claude keeps this session's context cached between your messages. Can't be changed once the session is running.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -256,7 +274,8 @@ struct NewSessionDialog: View {
                 cwd: cwd,
                 hostID: hostID,
                 windowMode: mode,
-                targetSessionID: target
+                targetSessionID: target,
+                cacheTTL: cacheTTL
             )
             isLaunching = false
             if success {

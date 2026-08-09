@@ -5,6 +5,8 @@ struct GeneralSettingsView: View {
     @AppStorage("appearance") private var appearance: String = "system"
     @AppStorage(AttentionService.notificationsEnabledDefaultsKey)
     private var notifyOnIdle: Bool = true
+    @AppStorage(AttentionService.cacheWarningsEnabledDefaultsKey)
+    private var warnOnCacheExpiry: Bool = true
 
     @EnvironmentObject private var dismissedHistoricalStore: DismissedHistoricalStore
 
@@ -25,6 +27,15 @@ struct GeneralSettingsView: View {
                     isOn: $notifyOnIdle
                 )
                 Text("The pulsing indicator on a session row appears regardless of this setting. Banner vs. alert style is controlled in System Settings → Notifications → Claude Project Hub.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle(
+                    "Warn me before a session's prompt cache expires",
+                    isOn: $warnOnCacheExpiry
+                )
+                Text("About a minute before the cache goes cold. Replying keeps it warm; otherwise your next message pays to rebuild the context. The session row's indicator appears regardless of this setting.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

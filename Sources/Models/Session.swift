@@ -14,6 +14,9 @@ struct Session: Identifiable, Codable, Equatable {
     var pid: Int32?
     var hostWindowID: CGWindowID?
     var dockState: DockState
+    /// Chosen at launch and reused on resume — a running session's TTL
+    /// can't be changed, so this records what it was started with.
+    var cacheTTL: PromptCacheTTL
     var createdAt: Date
     var lastActivityAt: Date
 
@@ -27,6 +30,7 @@ struct Session: Identifiable, Codable, Equatable {
         pid: Int32? = nil,
         hostWindowID: CGWindowID? = nil,
         dockState: DockState = .docked(tabIndex: 0),
+        cacheTTL: PromptCacheTTL = .fiveMinutes,
         createdAt: Date = Date(),
         lastActivityAt: Date = Date()
     ) {
@@ -39,6 +43,7 @@ struct Session: Identifiable, Codable, Equatable {
         self.pid = pid
         self.hostWindowID = hostWindowID
         self.dockState = dockState
+        self.cacheTTL = cacheTTL
         self.createdAt = createdAt
         self.lastActivityAt = lastActivityAt
     }
@@ -56,7 +61,7 @@ extension Session {
 
 extension Session {
     private enum CodingKeys: String, CodingKey {
-        case id, name, cwd, hostID, hostKind, claudeSessionId, status, pid, hostWindowID, dockState, createdAt, lastActivityAt
+        case id, name, cwd, hostID, hostKind, claudeSessionId, status, pid, hostWindowID, dockState, cacheTTL, createdAt, lastActivityAt
     }
 
     init(from decoder: Decoder) throws {
@@ -75,6 +80,9 @@ extension Session {
         let pid = try container.decodeIfPresent(Int32.self, forKey: .pid)
         let hostWindowID = try container.decodeIfPresent(CGWindowID.self, forKey: .hostWindowID)
         let dockState = try container.decode(DockState.self, forKey: .dockState)
+        // Absent on records written before the TTL picker existed; those
+        // sessions were started without the env var, i.e. Claude Code's 5m default.
+        let cacheTTL = try container.decodeIfPresent(PromptCacheTTL.self, forKey: .cacheTTL) ?? .fiveMinutes
         let createdAt = try container.decode(Date.self, forKey: .createdAt)
         let lastActivityAt = try container.decode(Date.self, forKey: .lastActivityAt)
 
@@ -88,6 +96,7 @@ extension Session {
             pid: pid,
             hostWindowID: hostWindowID,
             dockState: dockState,
+            cacheTTL: cacheTTL,
             createdAt: createdAt,
             lastActivityAt: lastActivityAt
         )
@@ -104,6 +113,7 @@ extension Session {
         try container.encodeIfPresent(pid, forKey: .pid)
         try container.encodeIfPresent(hostWindowID, forKey: .hostWindowID)
         try container.encode(dockState, forKey: .dockState)
+        try container.encode(cacheTTL, forKey: .cacheTTL)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(lastActivityAt, forKey: .lastActivityAt)
     }

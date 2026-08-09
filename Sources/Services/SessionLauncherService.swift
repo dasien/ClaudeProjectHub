@@ -140,7 +140,8 @@ final class SessionLauncherService: ObservableObject {
         cwd: URL,
         hostID: String,
         windowMode: WindowMode,
-        targetSessionID: Session.ID?
+        targetSessionID: Session.ID?,
+        cacheTTL: PromptCacheTTL = .fiveMinutes
     ) async -> Bool {
         guard let config = hostRegistry.host(forID: hostID) else {
             presentError(LauncherError.unknownHost(hostID))
@@ -171,13 +172,15 @@ final class SessionLauncherService: ObservableObject {
                 in: cwd,
                 mode: windowMode,
                 targetWindowID: targetWindowID,
-                claudeArgs: []
+                claudeArgs: [],
+                claudeEnv: cacheTTL.environment
             )
             let session = Session(
                 name: name?.isEmpty == false ? name : nil,
                 cwd: cwd,
                 hostID: hostID,
-                status: .idle
+                status: .idle,
+                cacheTTL: cacheTTL
             )
             store.add(session)
 
@@ -266,7 +269,9 @@ final class SessionLauncherService: ObservableObject {
                 in: session.cwd,
                 mode: windowMode,
                 targetWindowID: targetWindowID,
-                claudeArgs: ["--resume", resumedSessionId]
+                claudeArgs: ["--resume", resumedSessionId],
+                // A resumed session keeps the TTL it was created with.
+                claudeEnv: session.cacheTTL.environment
             )
             // Reuse the existing Session record instead of adding a new one.
             store.update(id: session.id) {

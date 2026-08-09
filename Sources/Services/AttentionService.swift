@@ -46,6 +46,22 @@ final class AttentionService: NSObject, ObservableObject {
     /// UserDefaults key for the on/off toggle in Settings.
     static let notificationsEnabledDefaultsKey = "notifyOnIdle"
 
+    // MARK: - Prompt-cache expiry
+
+    /// Sessions whose prompt cache is inside its final minute, or already
+    /// past it. Drives the sidebar/tab indicator; independent of whether
+    /// the banner is enabled.
+    @Published private(set) var cacheExpiring: Set<Session.ID> = []
+
+    static let cacheWarningsEnabledDefaultsKey = "warnOnCacheExpiry"
+
+    /// How long before expiry to warn.
+    private let cacheWarningLead: TimeInterval = 60
+    /// Sessions already warned for the current lull, so a session doesn't
+    /// re-notify every tick while it sits idle.
+    private var cacheWarned: Set<Session.ID> = []
+    private var cacheTimer: AnyCancellable?
+
     init(store: SessionStore, hostRegistry: HostRegistry) {
         self.store = store
         self.hostRegistry = hostRegistry
@@ -84,6 +100,75 @@ final class AttentionService: NSObject, ObservableObject {
                 Task { @MainActor in self.handleAppActivation(bundleID: bundleID) }
             }
             .store(in: &cancellables)
+
+        // The cache ages while nothing changes, so this can't be driven off
+        // store.$sessions — a quiet session publishes nothing. 15s is well
+        // inside the 60s lead we need and costs nothing when idle.
+        cacheTimer = Timer.publish(every: 15, tolerance: 5, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.evaluateCacheExpiry() }
+            }
+    }
+
+    /// Claude refreshes the prompt cache on every request, so the clock
+    /// starts when a session stops working. `lastActivityAt` mirrors the
+    /// per-pid file's `updatedAt`, which is what we anchor to.
+    private func evaluateCacheExpiry() {
+        var expiring: Set<Session.ID> = []
+        let now = Date()
+
+        for session in store.sessions {
+            // A working session is actively refreshing its cache, and a
+            // closed one has nothing to lose.
+            guard session.status == .idle else {
+                cacheWarned.remove(session.id)
+                continue
+            }
+            let elapsed = now.timeIntervalSince(session.lastActivityAt)
+            let warnAt = session.cacheTTL.duration - cacheWarningLead
+            guard elapsed >= warnAt else {
+                // Back inside the window — a later lull warns again.
+                cacheWarned.remove(session.id)
+                continue
+            }
+            expiring.insert(session.id)
+            if !cacheWarned.contains(session.id) {
+                cacheWarned.insert(session.id)
+                if cacheWarningsEnabled { postCacheWarning(for: session) }
+            }
+        }
+        // Only publish on a real change; this ticks every 15s and would
+        // otherwise invalidate every sidebar row for nothing.
+        if expiring != cacheExpiring { cacheExpiring = expiring }
+    }
+
+    private var cacheWarningsEnabled: Bool {
+        UserDefaults.standard.object(forKey: Self.cacheWarningsEnabledDefaultsKey) as? Bool ?? true
+    }
+
+    private func postCacheWarning(for session: Session) {
+        let content = UNMutableNotificationContent()
+        content.title = session.displayTitle
+        content.body = "Prompt cache expires in about a minute — reply now to keep it warm, or your next message pays to rebuild the context."
+        content.sound = nil
+        // Same key the click handler reads, so tapping this focuses the
+        // session exactly like an idle banner does.
+        content.userInfo = ["sessionID": session.id.uuidString]
+        // Distinct identifier so clearing an attention badge doesn't also
+        // remove this, and vice versa.
+        let request = UNNotificationRequest(
+            identifier: "cache-expiry-\(session.id.uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                notifyLog.error("posting cache warning failed: \(error.localizedDescription, privacy: .public)")
+            } else {
+                notifyLog.notice("posted cache warning for \(session.displayTitle, privacy: .public)")
+            }
+        }
     }
 
     /// Called when any application becomes the foreground app.

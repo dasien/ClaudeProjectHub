@@ -29,6 +29,10 @@ struct ResumeSessionDialog: View {
             .sorted { $0.lastActivityAt > $1.lastActivityAt }
     }
 
+    private var runningWindows: [HostWindowGroup] {
+        HostWindowGroup.grouped(from: runningSessions)
+    }
+
     private var isHostRunning: Bool {
         guard let bundleID = hostConfig?.bundleIdentifier else { return false }
         return NSWorkspace.shared.runningApplications.contains {
@@ -37,7 +41,7 @@ struct ResumeSessionDialog: View {
     }
 
     private var canUseNewTab: Bool {
-        (hostConfig?.supportsNewTab ?? false) && isHostRunning && !runningSessions.isEmpty
+        (hostConfig?.supportsNewTab ?? false) && isHostRunning && !runningWindows.isEmpty
     }
 
     private var canResume: Bool {
@@ -72,18 +76,22 @@ struct ResumeSessionDialog: View {
                     .pickerStyle(.radioGroup)
                     .labelsHidden()
                     .onChange(of: windowMode) { _, newMode in
+                        // Auto-pick only when there's a single *window* to
+                        // choose; several tabs in one window is still one
+                        // unambiguous choice.
                         if newMode == .newTab,
                            targetSessionID == nil,
-                           runningSessions.count == 1 {
-                            targetSessionID = runningSessions.first?.id
+                           runningWindows.count == 1 {
+                            targetSessionID = runningWindows.first?.representativeSessionID
                         }
                     }
 
                     if windowMode == .newTab {
                         Picker("", selection: $targetSessionID) {
-                            Text("Choose a session…").tag(Session.ID?.none)
-                            ForEach(runningSessions) { s in
-                                Text(s.displayTitle).tag(Session.ID?.some(s.id))
+                            Text("Choose a window…").tag(Session.ID?.none)
+                            ForEach(runningWindows) { window in
+                                Text(window.displayLabel)
+                                    .tag(Session.ID?.some(window.representativeSessionID))
                             }
                         }
                         .pickerStyle(.menu)

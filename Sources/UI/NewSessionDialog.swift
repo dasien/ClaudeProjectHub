@@ -44,34 +44,8 @@ struct NewSessionDialog: View {
             .sorted { $0.lastActivityAt > $1.lastActivityAt }
     }
 
-    /// Distinct host windows of `runningSessions`, grouped by
-    /// `hostWindowID`. The picker uses these instead of raw sessions so
-    /// that N tabs in one iTerm2 window collapse to one row — picking
-    /// any of them produces the same windowID at launch time, and the
-    /// previous per-session listing made the choice look meaningful
-    /// when it wasn't. Each group's `representativeSessionID` is the
-    /// most-recently-active session in the window; the launcher maps
-    /// it back to the same windowID, so behavior is unchanged.
-    private struct WindowGroup: Identifiable {
-        let id: CGWindowID
-        let sessions: [Session]
-        var representativeSessionID: Session.ID { sessions.first!.id }
-        var displayLabel: String {
-            sessions.map(\.displayTitle).joined(separator: ", ")
-        }
-    }
-
-    private var runningWindows: [WindowGroup] {
-        let grouped = Dictionary(grouping: runningSessions) { $0.hostWindowID }
-        return grouped.compactMap { (windowID, sessions) -> WindowGroup? in
-            guard let windowID, !sessions.isEmpty else { return nil }
-            let sorted = sessions.sorted { $0.lastActivityAt > $1.lastActivityAt }
-            return WindowGroup(id: windowID, sessions: sorted)
-        }
-        .sorted {
-            ($0.sessions.first?.lastActivityAt ?? .distantPast)
-                > ($1.sessions.first?.lastActivityAt ?? .distantPast)
-        }
+    private var runningWindows: [HostWindowGroup] {
+        HostWindowGroup.grouped(from: runningSessions)
     }
 
     private var canUseNewTab: Bool {

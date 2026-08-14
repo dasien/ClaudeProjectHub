@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SessionsSidebar: View {
@@ -118,6 +119,10 @@ struct SessionsSidebar: View {
     }
 
     private func startNewSession() {
+        // Reachable from the sidebar's own context menu as well as the
+        // toolbar, so it needs the same activation as the other
+        // menu-presented UI. A no-op when the toolbar button was used.
+        activateHub()
         guard launcher.ensureAccessibilityOrPrompt() else { return }
         newSessionPresented = true
     }
@@ -167,26 +172,42 @@ struct SessionsSidebar: View {
                     redock(session)
                 }
             }
-            Button("Rename…") { sessionToRename = session }
+            Button("Rename…") { activateHub(); sessionToRename = session }
             Button("Close") {
                 lifecycle.close(session.id)
             }
             Divider()
             Button("Get Info") {
-                openWindow(id: "session-info", value: session.id)
+                openInfoWindow(for: session.id)
             }
         case .closed:
-            Button("Resume…") { sessionToResume = session }
+            Button("Resume…") { activateHub(); sessionToResume = session }
                 .disabled(session.claudeSessionId == nil)
-            Button("Rename…") { sessionToRename = session }
+            Button("Rename…") { activateHub(); sessionToRename = session }
             Button("Remove from List", role: .destructive) {
                 store.remove(id: session.id)
             }
             Divider()
             Button("Get Info") {
-                openWindow(id: "session-info", value: session.id)
+                openInfoWindow(for: session.id)
             }
         }
+    }
+
+    /// Brings the hub forward before showing anything.
+    ///
+    /// A right-click doesn't activate an app, and every docked host window
+    /// sits above the hub — so any context-menu action that presents UI
+    /// put it somewhere nobody could see, and you had to click the hub and
+    /// try again. That applies to the Get Info window and equally to the
+    /// Rename/Resume sheets, which attach to the hub's own window.
+    private func activateHub() {
+        NSApp.activate()
+    }
+
+    private func openInfoWindow(for id: Session.ID) {
+        activateHub()
+        openWindow(id: "session-info", value: id)
     }
 
     // MARK: - "Available to Resume" header + rows
@@ -245,6 +266,7 @@ struct SessionsSidebar: View {
             HistoricalSessionRow(session: historical)
                 .contextMenu {
                     Button("Resume…") {
+                        activateHub()
                         historicalToResume = historical
                     }
                     Divider()

@@ -62,4 +62,10 @@ struct PricingTable: Codable, Equatable {
     /// risk pricing a new model with stale numbers.
     let fallback: String?
     let models: [ModelPricingEntry]
+    /// Bumped whenever the bundled table gains models or corrected
+    /// rates, so an existing install can tell it's behind. Absent in
+    /// tables written before versioning — treated as 0.
+    let version: Int?
+
+    var tableVersion: Int { version ?? 0 }
 }

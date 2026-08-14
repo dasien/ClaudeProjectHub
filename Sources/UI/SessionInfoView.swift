@@ -44,14 +44,21 @@ struct SessionInfoView: View {
 
     @ViewBuilder
     private func content(for session: Session) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            header(for: session)
-            Divider()
-            metadataSection(for: session)
-            Divider()
-            usageSection
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                header(for: session)
+                Divider()
+                metadataSection(for: session)
+                Divider()
+                usageSection
+            }
+            .padding(20)
+            // Everything here is a value worth pasting elsewhere — paths,
+            // the session id, token counts. Buttons and the like are
+            // unaffected; only Text picks this up.
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(20)
     }
 
     private func header(for session: Session) -> some View {
@@ -159,7 +166,13 @@ struct SessionInfoView: View {
 
     private func usageDetails(_ usage: SessionUsage) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(usage.byModel.keys.sorted()), id: \.self) { modelID in
+            // Zero-token entries aren't usage. Claude Code records
+            // locally-fabricated messages under the model id
+            // "<synthetic>" — "No response requested.", "Prompt is too
+            // long" — with every token count at 0 and no service tier,
+            // because no request was made. Listing them invites the
+            // question of why they have no cost.
+            ForEach(usage.byModel.keys.sorted().filter { (usage.byModel[$0]?.totalTokens ?? 0) > 0 }, id: \.self) { modelID in
                 if let totals = usage.byModel[modelID] {
                     modelLine(modelID: modelID, totals: totals)
                 }
@@ -169,8 +182,9 @@ struct SessionInfoView: View {
                 label: "Total Tokens",
                 value: usage.totalTokens.formatted(.number)
             )
+            let unpriced = usage.unpricedModels(using: pricingRegistry)
             row(
-                label: "Total Cost",
+                label: unpriced.isEmpty ? "Total Cost" : "Total Cost (partial)",
                 value: usage.totalCost(using: pricingRegistry).formatted(
                     .currency(code: pricingRegistry.table.metadata.currency ?? "USD")
                 )
@@ -180,7 +194,27 @@ struct SessionInfoView: View {
                 value: pricingRegistry.table.metadata.asOf,
                 muted: true
             )
+            if !unpriced.isEmpty {
+                // Say so rather than quietly omitting them — a confident
+                // total that silently drops a model is worse than no total.
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    Text(unpricedWarning(unpriced))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            }
         }
+    }
+
+    private func unpricedWarning(_ unpriced: [(modelID: String, tokens: Int)]) -> String {
+        let names = unpriced.map(\.modelID).joined(separator: ", ")
+        let tokens = unpriced.reduce(0) { $0 + $1.tokens }.formatted(.number)
+        return "Cost excludes \(tokens) tokens on \(names) — no pricing entry. "
+            + "Add one to models.json in the app's support folder to include it."
     }
 
     private func modelLine(modelID: String, totals: SessionUsage.ModelTotals) -> some View {

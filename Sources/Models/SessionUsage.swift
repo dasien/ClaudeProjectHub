@@ -27,10 +27,24 @@ struct SessionUsage: Equatable, Codable {
         byModel.values.reduce(0) { $0 + $1.totalTokens }
     }
 
+    /// Models present in this transcript that the pricing table has no
+    /// entry for, and the token count they account for.
+    ///
+    /// `totalCost` can only skip them, which silently understates the
+    /// total — when the table lagged behind two Opus releases that hid
+    /// ~80% of a session's spend while still showing a confident dollar
+    /// figure. Callers surface this so an incomplete total says so.
+    @MainActor
+    func unpricedModels(using registry: ModelPricingRegistry) -> [(modelID: String, tokens: Int)] {
+        byModel
+            .filter { registry.pricing(forModel: $0.key) == nil && $0.value.totalTokens > 0 }
+            .map { (modelID: $0.key, tokens: $0.value.totalTokens) }
+            .sorted { $0.tokens > $1.tokens }
+    }
+
     /// Compute the total cost in dollars using the provided pricing
-    /// registry. Models with no matching pricing entry contribute 0
-    /// to the total — caller can detect by comparing model ids in
-    /// `byModel.keys` against `registry.pricing(forModel:)`.
+    /// registry. Models with no matching pricing entry contribute 0 —
+    /// check `unpricedModels(using:)` before presenting this as complete.
     @MainActor
     func totalCost(using registry: ModelPricingRegistry) -> Double {
         byModel.reduce(0.0) { running, pair in

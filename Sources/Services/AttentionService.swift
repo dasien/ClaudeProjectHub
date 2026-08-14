@@ -150,7 +150,7 @@ final class AttentionService: NSObject, ObservableObject {
     private func postCacheWarning(for session: Session) {
         let content = UNMutableNotificationContent()
         content.title = session.displayTitle
-        content.body = "Prompt cache expires in about a minute — reply now to keep it warm, or your next message pays to rebuild the context."
+        content.body = "Prompt cache expires in about a minute. Reply now to keep this session's context cached."
         content.sound = nil
         // Same key the click handler reads, so tapping this focuses the
         // session exactly like an idle banner does.

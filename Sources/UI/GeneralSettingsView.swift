@@ -35,7 +35,7 @@ struct GeneralSettingsView: View {
                     "Warn me before a session's prompt cache expires",
                     isOn: $warnOnCacheExpiry
                 )
-                Text("About a minute before the cache goes cold. Replying keeps it warm; otherwise your next message pays to rebuild the context. The session row's indicator appears regardless of this setting.")
+                Text("About a minute before a session's prompt cache goes cold. Replying keeps it warm. The session row's indicator appears regardless of this setting.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -49,7 +49,7 @@ struct SessionRow: View {
                         Image(systemName: "clock.badge.exclamationmark")
                             .font(.caption)
                             .foregroundStyle(.orange)
-                            .help("Prompt cache is expiring — your next message will pay to rebuild the context")
+                            .help("Prompt cache is expiring — reply to keep this session's context cached")
                     }
                 }
                 HStack(spacing: 4) {

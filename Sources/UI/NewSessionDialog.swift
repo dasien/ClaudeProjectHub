@@ -155,21 +155,17 @@ struct NewSessionDialog: View {
                 }
             }
 
-            LabeledContent("Prompt cache:") {
-                VStack(alignment: .leading, spacing: 4) {
-                    Picker("", selection: $cacheTTL) {
-                        ForEach(PromptCacheTTL.allCases) { ttl in
-                            Text(ttl.displayName).tag(ttl)
-                        }
+            field(label: "Prompt cache") {
+                // Both options are always valid here, so the stock radio
+                // Picker is fine — unlike the Open-in chooser above, which
+                // needs hand-built rows to disable an option.
+                Picker("", selection: $cacheTTL) {
+                    ForEach(PromptCacheTTL.allCases) { ttl in
+                        Text(ttl.displayName).tag(ttl)
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                    Text("How long Claude keeps this session's context cached between your messages. Can't be changed once the session is running.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
             }
 
             HStack {

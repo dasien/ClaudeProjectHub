@@ -55,6 +55,7 @@ Fields (`Sources/Models/Session.swift`):
 - `status`: `idle` / `working` / `closed`
 - `pid`: claude process PID (transient; cleared on close/load)
 - `hostWindowID`: CGWindowID (transient; cleared on close/load)
+- `cacheTTL`: `PromptCacheTTL` (`.fiveMinutes` / `.oneHour`) — chosen at launch, reused verbatim on resume. A running session's TTL can't be changed, so this records what it was actually started with. Absent on records written before the picker existed; those decode as `.fiveMinutes`, which is what they ran with.
 - `createdAt`, `lastActivityAt`
 
 Codable backwards-compat: legacy persisted records used `hostKind: HostKind` (an enum). The custom `init(from:)` accepts both `hostID` and legacy `hostKind` keys; encoding always writes `hostID`.
@@ -90,7 +91,7 @@ Placeholder substitution applied to the script before execution:
 | Token | Value |
 |---|---|
 | `{cwd}` | absolute path of the working directory |
-| `{claude}` | shell command — `claude` or `claude --resume <id>` |
+| `{claude}` | shell command — `claude` or `claude --resume <id>`, optionally prefixed with `VAR=value` assignments (see "Prompt-cache TTL" below) |
 | `{marker}` | unique tag (e.g. set as a tab title for AX matching) |
 | `{mode}` | `"newWindow"` or `"newTab"` |
 | `{targetWindowID}` | CGWindowID of the user-picked target window for newTab mode (`0` otherwise) |
@@ -102,6 +103,50 @@ Script return value: a positive integer is treated as the new window's CGWindowI
 For newTab mode, Swift AX-raises the user's target window before running the script, so `tell current window` / System Events keystrokes inside the script land on the right window without each script reinventing that dance.
 
 `HostConfig.supportsNewTab` returns `true` for hosts whose default script handles newTab mode — currently a heuristic on `launchScript` filename (terminal-app, iterm2). Other hosts default to new-window-only.
+
+---
+
+## Prompt-cache TTL
+
+Claude keeps a session's prompt cache warm for **5 minutes by default**; `ENABLE_PROMPT_CACHING_1H=1` in the `claude` process's environment switches it to the **1-hour** tier. There is no CLI flag — `claude --help` has nothing for it (its one cache-related flag, `--exclude-dynamic-system-prompt-sections`, is about cross-user cache reuse, not lifetime). The New Session dialog exposes the choice; `Session.cacheTTL` persists it.
+
+**The env var is the whole mechanism, and it goes in one place.** `ShellCommand.claudeInvocation(args:env:)` renders it as a `VAR=value` **prefix** on the command, which is why all 13 `.applescript` files needed no change — every host funnels through that one call, and the result composes correctly whether a script runs it via `do shell script` or types it into a terminal:
+
+```sh
+cd '/path/to/project' && ENABLE_PROMPT_CACHING_1H='1' claude
+```
+
+A prefix rather than an `export` deliberately: it scopes to that single invocation and can't leak into anything else the shell later runs. With `.fiveMinutes` the env dict is empty and the command is exactly `claude`, so the default path is byte-identical to what shipped before.
+
+**Verification status (as of 2026-08-14): the 1-hour path has never been observed working.** The shell mechanics were checked directly, and the var's name came from the project owner rather than from Anthropic docs — a `strings` sweep of the `claude` binary found nothing because it's a packed 258 MB executable, so absence of evidence there means nothing. Confirm it by launching a 1h session, letting it take a turn, and checking the transcript:
+
+```bash
+python3 -c "
+import json,glob,os
+t=0
+for f in glob.glob(os.path.expanduser('~/.claude/projects/*/*.jsonl')):
+    for l in open(f,errors='ignore'):
+        try: d=json.loads(l)
+        except: continue
+        c=((d.get('message') or {}).get('usage') or {}).get('cache_creation') or {}
+        t+=c.get('ephemeral_1h_input_tokens',0) or 0
+print('1h cache tokens:', f'{t:,}')"
+```
+
+Non-zero means it works. Every `usage` block carries `cache_creation: {ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}`, so the transcript is authoritative about which tier was actually used.
+
+### Expiry warnings
+
+`AttentionService` warns about a minute before expiry — it already owned the `UNUserNotificationCenter` delegate, so a tap focuses the session through the existing handler with no new wiring, and the request identifier is prefixed (`cache-expiry-<uuid>`) so clearing an attention badge doesn't clear a cache warning too. Details that are load-bearing:
+
+- **Anchored on `lastActivityAt`**, which mirrors the per-pid file's `updatedAt`. Claude refreshes the cache on **every request**, not once per user turn, so the clock only starts when a session stops working — a long tool loop keeps it warm (measured median gap between assistant messages: 0.9s).
+- **Driven by a 15s timer**, because a quiet session publishes nothing to react to; this can't hang off `store.$sessions`. It only assigns `cacheExpiring` when the set actually changes, so the tick doesn't invalidate every sidebar row.
+- **One warning per lull**, re-armed once the session goes back to working.
+- **The alert is purely time-based and says nothing about cost** — deliberate. Pricing belongs to Get Info, not to notifications.
+
+### Why 5 minutes is the default
+
+Not just conservatism. 1h cache writes cost **2× base input** against 5m's 1.25×, while reads stay at 0.1× — so 1h only pays off when a large enough share of cache-*write* tokens are re-writes that would have landed inside the 5–60 minute window. That break-even is **~39.5%**, and it depends only on the multipliers, not the prices, so it holds across models and survives price changes. Measured on one long session here it was 24.8%, i.e. 1h would have cost *more*, because Claude Code writes an incremental cache on nearly every turn and the 1h premium applies to that whole base while the benefit reaches only the stale-re-write slice. Worth re-measuring per project rather than treating either TTL as generally better.
 
 ---
 
@@ -477,6 +522,10 @@ log stream --predicate 'process == "tccd" AND (eventMessage CONTAINS "ClaudeProj
   - **Tab drops with the window, not the process** (commit `651cc67`, 2026-07-29): fixes the 3-5s lag before a closed host window cleared from the hub. Two parts. (1) **Event-driven process exit** — each running session gets a `DispatchSourceProcess` watching `.exit` (kqueue `NOTE_EXIT`) in `SessionLifecycleMonitor`, so `status` flips the instant the pid dies instead of up to a 2s poll later. Watchers are keyed by session id *and* tagged with the watched pid, so a session returning on a different pid (reconcile promoting a stale-closed record) gets its watcher rebuilt. The 2s poll remains for what needs sampling — busy/idle refinement, the tabID self-heal, a liveness backstop — and both paths funnel through one idempotent `markClosed`. (2) **Tab decoupled from process liveness** — a tab's contract is "click me to see that window," so a tab whose window is destroyed is a broken affordance regardless of process state. `TabbedHostArea` now filters on running *and* still window-backed; `WindowManager` publishes `boundSessionIDs` (synced by `didSet` on `bindings` so no mutation site can forget); `DockController` takes a `WindowManager` reference and releases the binding on a confirmed destroy. Net: tab disappears with the window (~500ms, matching the undocked indicator) while the sidebar row honestly shows the session running until its pid exits. Undocking a live session still keeps its tab. **Key measurement:** a claude process outlives its host window by ~5s (iTerm2 teardown + claude's SIGHUP cleanup) — so detection speed alone could never have fixed this; see the corrected entry in Deferred for the misdiagnosis worth learning from.
   - **Reconcile externally-resumed sessions on hub activation** (commit `edd3276`, 2026-07-29): `reconcileStaleClosedSessions()` previously ran only from `reattachAll()` — hub startup and system wake. So the most common way to strand a record went unnoticed: the user runs `claude --resume <id>` in a terminal themselves while the hub is already running and awake. The record stayed `.closed` while `ExternalSessionScanner` skipped the live process (its sessionId *is* tracked), leaving the session in a gap — seen by one component, disowned by the other; recoverable only by restarting the hub. Now also reconciles on `NSApplication.didBecomeActiveNotification`, catching it in the natural flow (resume in terminal → switch to hub → correct). `reconcileStaleClosedSessions()` returns the promoted ids so only those reattach; `isReconciling` guards overlapping activations. **Deliberately no polling timer** — every stale-closed path is already an observed event (external resume → activation, spurious close → `didWake`, hub restart → startup); the sole gap is a session going stale while the hub sits visible-but-never-activated on another display, which self-heals on click. Rationale is in the code so it doesn't get "fixed" with a timer later. Also fixes a stale `hostID`: a session can return in a different host than the record remembers (record says iTerm2, user resumed in Terminal) — the dock already used the resolved host, but the persisted record kept the old id, so the sidebar showed the wrong host name and icon.
   - **Follow hub selection on external focus — roadmap step 3** (commit `33593ad`, 2026-07-29): when the user brings a docked host window to the front *outside* the hub (click it, or cmd-tab / Dock / Mission Control to the host app), the hub's sidebar + tab selection follows to that session. **Selection-only — no window moves, focus stays where the user put it** (this was a deliberate design choice over "raise the hub," to avoid stealing focus from the terminal the user just clicked). Two trigger paths into `DockController.syncSelection`: `kAXFocusedWindowChangedNotification` subscribed once per host pid on the *application* element (`appFocusSubscribedPIDs`), and `NSWorkspace.didActivateApplicationNotification` for the cmd-tab-to-host case. `syncSelection` sets `activeSessionID` *before* `store.selectedSessionID` — ordering is load-bearing: `MainView.onChange` → `setActiveSessionID` early-returns when the id is already active, so nothing raises; the `activeSessionID != sessionID` guard is also the loop-breaker against our own raises re-firing `focusedWindowChanged`. `AXSupport.focusedWindow(ofApplication:)` is role-validated. Scope: **docked sessions only** (mapped via DockController bindings) — undocked/free-floating sessions aren't synced yet (see follow-up below). The ⌘⇧F "Focus Active Session" shortcut stays one-way (push focus to the session; no toggle back — confirmed intentional 2026-07-29).
+
+- **Prompt-cache TTL + expiry warnings** (commits `ed01612`, `0f7946f`, 2026-08-14): New Session dialog picks 5m or 1h; the choice rides to `claude` as an `ENABLE_PROMPT_CACHING_1H=1` prefix from `ShellCommand.claudeInvocation`, persists on `Session.cacheTTL`, and is reused on resume. `AttentionService` warns ~1 minute before expiry (15s timer, one warning per lull, amber `clock.badge.exclamationmark` on the sidebar row) with a Settings toggle for the banner. Defaults to 5m, so nothing changes for anyone who doesn't ask. **The 1h path is still unverified** — see "Prompt-cache TTL" above for the mechanism, why the default is 5m, and the one-command check that would confirm it.
+- **Accurate pricing in Get Info** (commit `471cf01`, 2026-08-14): `models.json` stopped at `claude-opus-4-7`, so `claude-opus-5` and `claude-opus-4-8` matched nothing and — because `SessionUsage` skips unknown models and `fallback` is nil — 81.5% of a session was priced at $0 behind a confident-looking total (~$208 shown against ~$1,036 actual). Added the 5-series entries from the cited pricing page, made the table version-updatable so an existing install actually receives corrections (see the Deferred entry on bundled-file updates — this is the trap that makes such a fix look done while every install stays wrong), and surfaced unpriced models as "Total Cost (partial)" instead of silently dropping them. Zero-token models are no longer listed at all: Claude Code files locally-fabricated messages ("No response requested.", "Prompt is too long") under model id `<synthetic>` with every count at 0, since no request was made. **Still unpriced: fast mode** — $10/$50 per MTok on Opus 5/4.8 against $5/$25 standard, detectable from the `speed` field the transcript already records, so a `/fast` session is understated by up to 2×. `inference_geo: "us"` adds a further 1.1×.
+- **Context-menu UI needs explicit activation** (commit `2660f93`, 2026-08-14): a right-click doesn't activate a macOS app, and docked host windows are pinned *above* the hub — so Get Info opened a window nobody could see, and the user had to click the hub and retry. Every sidebar context-menu action that presents UI now calls `NSApp.activate()` first: Get Info, Rename, Resume, historical Resume, New Session. The Rename/Resume sheets had the same defect for the same reason (they attach to the hub's own window). `AttentionService.handleNotificationClick` already did this — same problem arriving by a different route. Note `SessionLauncherService`'s `NSAlert` paths are unaudited for this.
 
 ### Session-tracking audit — full findings, in case some become useful later
 

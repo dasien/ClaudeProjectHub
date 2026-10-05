@@ -17,6 +17,9 @@ final class SessionStore: ObservableObject {
 
     private let storeURL: URL
     private let persists: Bool
+    /// Set when sessions.json failed to decode *and* couldn't be backed
+    /// up: saving would destroy the only copy of the unreadable records.
+    private var saveBlocked = false
     private var selectionPersistenceCancellable: AnyCancellable?
 
     init(storeURL: URL = SessionStore.defaultStoreURL, persists: Bool = true) {
@@ -88,7 +91,18 @@ final class SessionStore: ObservableObject {
         guard let data = try? Data(contentsOf: storeURL) else { return }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        guard let decoded = try? decoder.decode([Session].self, from: data) else { return }
+        let decoded: [Session]
+        do {
+            decoded = try decoder.decode([Session].self, from: data)
+        } catch {
+            // The whole-array decode is all-or-nothing, so one unreadable
+            // record (a hand edit, or a status value from a newer build
+            // sharing this file) used to mean an empty list — which the
+            // next save then wrote over the file. Keep the original and
+            // salvage every record that does decode.
+            if CorruptFile.preserve(storeURL, error: error) == nil { saveBlocked = true }
+            decoded = SessionStore.decodeIndividually(data, decoder: decoder)
+        }
         // Transient AX bindings don't survive a hub restart. The pid does,
         // and so does hostWindowID — the latter is just a CGWindowID
         // number, not an AX element, so it can be used as a recovery
@@ -124,8 +138,16 @@ final class SessionStore: ObservableObject {
         kill(pid, 0) == 0 || errno == EPERM
     }
 
+    private static func decodeIndividually(_ data: Data, decoder: JSONDecoder) -> [Session] {
+        guard let records = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return [] }
+        return records.compactMap { record in
+            guard let recordData = try? JSONSerialization.data(withJSONObject: record) else { return nil }
+            return try? decoder.decode(Session.self, from: recordData)
+        }
+    }
+
     private func save() {
-        guard persists else { return }
+        guard persists, !saveBlocked else { return }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

@@ -79,7 +79,7 @@ extension Session {
         let status = try container.decode(SessionStatus.self, forKey: .status)
         let pid = try container.decodeIfPresent(Int32.self, forKey: .pid)
         let hostWindowID = try container.decodeIfPresent(CGWindowID.self, forKey: .hostWindowID)
-        let dockState = try container.decode(DockState.self, forKey: .dockState)
+        let dockState = try container.decodeIfPresent(DockState.self, forKey: .dockState) ?? .docked(tabIndex: 0)
         // Absent on records written before the TTL picker existed; those
         // sessions were started without the env var, i.e. Claude Code's 5m default.
         let cacheTTL = try container.decodeIfPresent(PromptCacheTTL.self, forKey: .cacheTTL) ?? .fiveMinutes

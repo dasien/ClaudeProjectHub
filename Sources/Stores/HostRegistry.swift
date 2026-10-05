@@ -90,14 +90,16 @@ final class HostRegistry: ObservableObject {
             save()
             return
         }
-        if let data = try? Data(contentsOf: url),
-           let decoded = try? JSONDecoder().decode([HostConfig].self, from: data) {
-            hosts = decoded
-        } else {
-            // Old format or corrupt — regenerate from defaults. There are
-            // no production users yet, so we don't bother with migration.
+        do {
+            let data = try Data(contentsOf: url)
+            hosts = try JSONDecoder().decode([HostConfig].self, from: data)
+        } catch {
+            // Corrupt or hand-edited into something invalid (one trailing
+            // comma fails the whole array). Fall back to defaults, but keep
+            // the user's file first — this used to overwrite it and lose
+            // every custom host. Without a backup, leave the file alone.
             hosts = HostRegistry.builtinDefaults
-            save()
+            if CorruptFile.preserve(url, error: error) != nil { save() }
         }
     }
 

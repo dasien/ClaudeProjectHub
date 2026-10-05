@@ -18,7 +18,11 @@ set theClaude to "{claude}"
 set theMarker to "{marker}"
 set theMode to "{mode}"
 
-set runCommand to "cd " & quoted form of theCwd & " && " & theClaude
+-- `&& exit` closes the tab with claude: the hub drops a session the
+-- moment claude ends, so a leftover shell tab just drifts out of step
+-- with it. Only a clean exit closes it — if claude crashes or the cd
+-- fails, the shell stays open with the error visible.
+set runCommand to "cd " & quoted form of theCwd & " && " & theClaude & " && exit"
 
 if theMode is "newWindow" then
     if application "Terminal" is running then

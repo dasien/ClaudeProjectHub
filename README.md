@@ -143,10 +143,9 @@ Conventions worth keeping:
 - **Tag every release** `vX.Y.Z`. There's no other record of what shipped
   when, since there are no release artefacts to point at.
 
-Pre-`1.0` while three things are outstanding: there's no notarised build
-(so it can't be handed to a non-developer — see [Install](#install)), the
-Xcode host isn't implemented, and the app has only been exercised on the
-author's machine.
+Pre-`1.0` while two things are outstanding: there's no notarised build
+(so it can't be handed to a non-developer — see [Install](#install)), and
+the app has only been exercised on the author's machine.
 
 ## Project layout
 

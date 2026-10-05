@@ -262,7 +262,7 @@ These are deliberate non-goals or pending work — don't try to fix them in your
 - **No window reparenting.** Foreign windows stay top-level OS windows owned by their own app; the hub uses AX to position them inside the dock area. See [CLAUDE.md → Docking architecture](CLAUDE.md#docking-architecture).
 - **No SkyLight private APIs.** Stay AX-only.
 - **Multi-monitor edge cases** are partially supported but not rigorously tested. If your host behaves oddly across multiple displays, file an issue rather than working around it in the script.
-- **Xcode** doesn't have an integrated terminal we can drive AppleScript into. Likely future approach: open the project in Xcode and spawn a separate Terminal/iTerm window for `claude` in the same dir, treating both as part of one logical session. Design pending.
+- **Xcode is a deliberate non-goal**, not pending work. It has no integrated terminal to drive AppleScript into, so an Xcode host could only ever be a terminal host plus the side effect of opening the project — and the hub's bind path resolves windows through the host's bundle id, so such a host mis-binds Xcode's own project window instead of the terminal running `claude`. Use Terminal or iTerm2 as the host and open the project in Xcode yourself. Full reasoning in [CLAUDE.md → Out of scope](CLAUDE.md#out-of-scope).
 
 ## Contributing your integration upstream
 

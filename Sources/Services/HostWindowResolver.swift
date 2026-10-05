@@ -81,15 +81,18 @@ enum HostWindowResolver {
         return nil
     }
 
-    /// Host-specific AppleScript dispatch. Add new hosts here as
-    /// their AppleScript dictionaries support window-by-tty queries.
+    /// App-specific AppleScript dispatch, keyed on
+    /// `HostConfig.terminalScripting` — i.e. on the host's bundle id, not
+    /// its hub id, so user-added hosts backed by Terminal or iTerm2 route
+    /// here too. Add a case (and one in `HostTabSelector`) when another
+    /// terminal's dictionary exposes a per-tab tty.
     private static func ttyWindow(forHost host: HostConfig, tty: String) -> CGWindowID? {
-        switch host.id {
-        case "iterm2":
+        switch host.terminalScripting {
+        case .iTerm2:
             return findITerm2Window(forTTY: tty)
-        case "terminal-app":
+        case .terminal:
             return findTerminalWindow(forTTY: tty)
-        default:
+        case nil:
             return nil
         }
     }

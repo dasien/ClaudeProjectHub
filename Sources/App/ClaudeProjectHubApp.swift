@@ -21,7 +21,7 @@ struct ClaudeProjectHubApp: App {
         let store = SessionStore()
         let manager = WindowManager()
         let registry = HostRegistry()
-        let dock = DockController(store: store, windowManager: manager)
+        let dock = DockController(store: store, windowManager: manager, hostRegistry: registry)
         let monitor = SessionLifecycleMonitor(store: store, windowManager: manager, dockController: dock)
         let scanner = ExternalSessionScanner(store: store, hostRegistry: registry)
         let dismissed = DismissedHistoricalStore()

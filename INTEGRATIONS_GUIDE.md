@@ -73,6 +73,12 @@ Notes:
 - The trailing `&` detaches the spawned process so `do shell script` returns immediately.
 - AX-diff works because the new window is the only one that wasn't in the pre-launch snapshot.
 - `newTab` mode for these hosts usually isn't supported — terminals like Ghostty don't have an AppleScript dictionary for tab-into-existing-window. Either error out, fall back to spawning a new window, or use `keystroke "t" using {command down}` after raising the target window (System Events keystrokes will land on it because Swift pre-raised it).
+- **Launching is the easy part; two post-launch capabilities need the app's dictionary and can't be supplied by your script.** The hub asks a terminal two questions it can only answer through AppleScript: *which of your windows holds the session on tty `/dev/ttysNNN`?* and *select (or close) that one tab*. Both are dispatched from `HostConfig.terminalScripting`, which recognises Terminal and iTerm2 by bundle id. A host whose app has no such dictionary gets `nil` there and loses:
+  - **Per-tab switching.** If two sessions end up in tabs of one window, clicking either hub tab raises the right *window* but can't change the host's current *tab*. Rarely hit, because `supportsNewTab` is false for a custom script so the hub won't create siblings itself — but it can happen if you open a second tab by hand and the hub adopts that session.
+  - **Per-tab close.** Closing one of several sessions in a window falls back to `SIGTERM` on the claude process, leaving the tab at a shell prompt. Honest, and the same thing Terminal does (its `tab` responds to no `close`), just not as tidy as iTerm2.
+  - **tty→window resolution**, which matters most. Adopting an external session, or reattaching after a wake where CGWindowIDs changed, falls back to the host app's *focused* window. With one window open that's correct; with several it can bind the wrong one.
+
+  If your terminal *does* expose a per-tab tty, wiring it up is two cases in Swift rather than anything in your script: add one to `HostConfig.TerminalScripting` and handle it in both `HostWindowResolver.ttyWindow(forHost:)` and `HostTabSelector`. Because the dispatch keys on bundle id and not on your host's id, a host you add that's backed by Terminal or iTerm2 gets all of this for free, whatever you name it.
 
 ### Host with an AppleScript dictionary that exposes window IDs (iTerm2, Terminal)
 
@@ -262,6 +268,7 @@ These are deliberate non-goals or pending work — don't try to fix them in your
 - **No window reparenting.** Foreign windows stay top-level OS windows owned by their own app; the hub uses AX to position them inside the dock area. See [CLAUDE.md → Docking architecture](CLAUDE.md#docking-architecture).
 - **No SkyLight private APIs.** Stay AX-only.
 - **Multi-monitor edge cases** are partially supported but not rigorously tested. If your host behaves oddly across multiple displays, file an issue rather than working around it in the script.
+- **Per-tab switching, per-tab close and tty→window resolution need the host app's AppleScript dictionary**, so they're unavailable to terminals that don't have one — no script you write can supply them. Details and the exact consequences are under [CLI-spawnable terminal](#cli-spawnable-terminal-ghostty-wezterm-kitty-alacritty-) above.
 - **Xcode is a deliberate non-goal**, not pending work. It has no integrated terminal to drive AppleScript into, so an Xcode host could only ever be a terminal host plus the side effect of opening the project — and the hub's bind path resolves windows through the host's bundle id, so such a host mis-binds Xcode's own project window instead of the terminal running `claude`. Use Terminal or iTerm2 as the host and open the project in Xcode yourself. Full reasoning in [CLAUDE.md → Out of scope](CLAUDE.md#out-of-scope).
 
 ## Contributing your integration upstream

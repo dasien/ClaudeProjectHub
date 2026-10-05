@@ -10,8 +10,10 @@ import Foundation
 /// matching tab.
 ///
 /// For terminal hosts, the tab identifier is the session's
-/// controlling tty (`/dev/ttysNNN`). Hosts without a tabbed model
-/// or without an AppleScript story (VSCode, Xcode) are no-ops here.
+/// controlling tty (`/dev/ttysNNN`). Hosts whose app exposes no
+/// per-tab AppleScript — VSCode, the JetBrains IDEs, and most
+/// user-added CLI terminals — are no-ops here; see
+/// `HostConfig.terminalScripting` for how that's decided.
 ///
 /// **Scoped to the known window** for cost: each AppleScript *property
 /// access* is a separate Apple Event, so an unscoped
@@ -39,13 +41,17 @@ enum HostTabSelector {
     ///   A *stale* id isn't a problem either: the script errors
     ///   (`-1728`, verified) and the detached runner discards it, which
     ///   is the same outcome as today's "tty not found" case.
-    static func selectTab(hostID: String, tabIdentifier: String, windowID: CGWindowID?) {
-        switch hostID {
-        case "iterm2":
+    static func selectTab(
+        scripting: HostConfig.TerminalScripting?,
+        tabIdentifier: String,
+        windowID: CGWindowID?
+    ) {
+        switch scripting {
+        case .iTerm2:
             _ = try? AppleScriptRunner.run(iTerm2Script(tty: tabIdentifier, windowID: windowID))
-        case "terminal-app":
+        case .terminal:
             _ = try? AppleScriptRunner.run(terminalScript(tty: tabIdentifier, windowID: windowID))
-        default:
+        case nil:
             break
         }
     }
@@ -62,14 +68,18 @@ enum HostTabSelector {
     /// 2026-07-30): iTerm2's `session` and `tab` both respond to
     /// `close`. Terminal's `tab` responds to **nothing** — only `window`
     /// does — so there is no per-tab close for it at all.
-    static func closeTab(hostID: String, tabIdentifier: String, windowID: CGWindowID?) -> Bool {
-        switch hostID {
-        case "iterm2":
+    static func closeTab(
+        scripting: HostConfig.TerminalScripting?,
+        tabIdentifier: String,
+        windowID: CGWindowID?
+    ) -> Bool {
+        switch scripting {
+        case .iTerm2:
             _ = try? AppleScriptRunner.run(
                 iTerm2CloseScript(tty: tabIdentifier, windowID: windowID)
             )
             return true
-        default:
+        case .terminal, nil:
             return false
         }
     }

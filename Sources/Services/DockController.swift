@@ -137,10 +137,16 @@ final class DockController: ObservableObject {
     /// bar keys off `WindowManager.boundSessionIDs` to decide whether a
     /// session still has a window worth showing a tab for.
     private let windowManager: WindowManager
+    /// Only used to turn a cached hostID into the host's
+    /// `terminalScripting` capability for per-tab AppleScript. Resolved on
+    /// demand rather than cached at dock time so a host edited in Settings
+    /// (e.g. its bundle id corrected) takes effect without a re-dock.
+    private let hostRegistry: HostRegistry
 
-    init(store: SessionStore, windowManager: WindowManager) {
+    init(store: SessionStore, windowManager: WindowManager, hostRegistry: HostRegistry) {
         self.store = store
         self.windowManager = windowManager
+        self.hostRegistry = hostRegistry
         // Re-raise the active docked window when the hub regains focus
         // after the user switched away to another app. Without this the
         // docked window can end up below other apps' windows in z-order
@@ -544,7 +550,7 @@ final class DockController: ObservableObject {
             return false
         }
         let handled = HostTabSelector.closeTab(
-            hostID: hostID,
+            scripting: hostRegistry.host(forID: hostID)?.terminalScripting,
             tabIdentifier: tabID,
             windowID: cgIDsBySession[sessionID]
         )
@@ -781,7 +787,7 @@ final class DockController: ObservableObject {
         let windowID = cgIDsBySession[id]
         dockLog.debug("selectActiveTab: host=\(hostID, privacy: .public) tty=\(tabID, privacy: .public) windowID=\(windowID.map(String.init) ?? "nil", privacy: .public)")
         HostTabSelector.selectTab(
-            hostID: hostID,
+            scripting: hostRegistry.host(forID: hostID)?.terminalScripting,
             tabIdentifier: tabID,
             windowID: windowID
         )

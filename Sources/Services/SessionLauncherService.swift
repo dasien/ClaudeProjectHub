@@ -423,6 +423,18 @@ final class SessionLauncherService: ObservableObject {
         }
     }
 
+    /// Whether two host ids name the same underlying application. Both
+    /// must resolve to a registered host with a bundle id — an unknown id,
+    /// or a host with no bundle id, counts as different so the caller
+    /// falls back to its normal behavior rather than silently treating
+    /// two unrelated hosts as one.
+    private func sameHostApp(_ lhs: String, _ rhs: String) -> Bool {
+        guard let a = hostRegistry.host(forID: lhs)?.bundleIdentifier?.lowercased(),
+              let b = hostRegistry.host(forID: rhs)?.bundleIdentifier?.lowercased()
+        else { return false }
+        return a == b
+    }
+
     @discardableResult
     private func reattach(_ session: Session) async -> Bool {
         guard let pid = session.pid else { return false }
@@ -468,7 +480,14 @@ final class SessionLauncherService: ObservableObject {
         // the freshly-resolved host below; without this the persisted
         // record keeps the stale hostID and the sidebar shows the wrong
         // host name and icon.
-        if session.hostID != match.hostID {
+        //
+        // Compared by *app*, not by hostID: two registered hosts can share
+        // one bundle id (a user-added Terminal variant alongside the
+        // built-in one), and `HostWindowResolver` returns whichever appears
+        // first in hosts.json. Rewriting on hostID alone would silently
+        // migrate such a session off the host the user picked on every
+        // reattach. Only a genuinely different application is a real move.
+        if session.hostID != match.hostID, !sameHostApp(session.hostID, match.hostID) {
             launcherLog.notice("reattach: session \(session.id, privacy: .public) moved host \(session.hostID, privacy: .public) → \(match.hostID, privacy: .public); updating record")
             store.update(id: session.id) { $0.hostID = match.hostID }
         }

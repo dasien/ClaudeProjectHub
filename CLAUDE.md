@@ -102,7 +102,21 @@ Script return value: a positive integer is treated as the new window's CGWindowI
 
 For newTab mode, Swift AX-raises the user's target window before running the script, so `tell current window` / System Events keystrokes inside the script land on the right window without each script reinventing that dance.
 
-`HostConfig.supportsNewTab` returns `true` for hosts whose default script handles newTab mode — currently a heuristic on `launchScript` filename (terminal-app, iterm2). Other hosts default to new-window-only.
+### Host capabilities are keyed three different ways, on purpose
+
+A host isn't one capability, it's three, and each is a property of a different thing. Getting the key wrong is silent — the host launches perfectly and then misbehaves later.
+
+| Capability | Keyed on | Because |
+|---|---|---|
+| Is the host installed / what's its pid / what's its icon | `bundleIdentifier` | properties of the **application** |
+| tty→window lookup, per-tab select, per-tab close (`HostConfig.terminalScripting`) | `bundleIdentifier` | these come out of the **app's AppleScript dictionary** |
+| `newTab` mode offered in the dialogs (`HostConfig.supportsNewTab`) | `launchScript` filename | newTab is implemented by the **launch script** — a host can be Terminal-backed with a script that doesn't handle it |
+
+The middle row used to key on `HostConfig.id`, matching the two shipped ids (`"iterm2"`, `"terminal-app"`) as literals in `switch` statements inside `HostWindowResolver.ttyWindow(forHost:)` and `HostTabSelector`. That silently degraded every **user-added** host: Settings → Hosts slugs the id from the display name (its placeholder is literally "e.g. ghostty"), so a second host backed by Terminal or iTerm2 — a realistic thing to add, e.g. a variant launching a different profile — matched nothing and lost tty→window resolution, per-tab switching and per-tab close, despite the app supporting all three. Fixed 2026-08-17 by deriving `terminalScripting` from the bundle id.
+
+The same app-vs-hub-identity confusion had a second consequence worth keeping in mind: **two registered hosts can share one bundle id**, and `HostWindowResolver.resolve` returns whichever of them appears first in `hosts.json`. The reattach hostID rewrite in `SessionLauncherService.reattach` therefore used to migrate such a session off the host the user picked, on every restart and wake — permanently, since it persists. It now compares by *application* (`sameHostApp`) and only rewrites when the app genuinely differs, which is the case the rewrite was written for (record says iTerm2, session came back in Terminal).
+
+Worth knowing what that fix can't reach: **a terminal with no AppleScript dictionary can never be tty-routable.** There's no automation surface to ask Ghostty or kitty which window holds `/dev/ttys013`, so those hosts get `terminalScripting == nil` and fall back to the host app's focused window when adopting an external session or reattaching after a wake (where CGWindowIDs change and the persisted `hostWindowID` breadcrumb goes stale). Correct with one window open, a coin-flip with several. This is a limitation to document, not a bug to fix — it's written up for contributors in INTEGRATIONS_GUIDE's CLI-terminal section. Adding a genuinely scriptable terminal means one new `TerminalScripting` case plus a branch in each of those two files.
 
 ---
 

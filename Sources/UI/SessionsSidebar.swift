@@ -181,8 +181,10 @@ struct SessionsSidebar: View {
                 openInfoWindow(for: session.id)
             }
         case .closed:
+            // Always enabled: a record with no captured id can still be
+            // resumed when its folder holds one unclaimed conversation, and
+            // resume() explains when it can't.
             Button("Resume…") { activateHub(); sessionToResume = session }
-                .disabled(session.claudeSessionId == nil)
             Button("Rename…") { activateHub(); sessionToRename = session }
             Button("Remove from List", role: .destructive) {
                 // Normally a no-op (closing undocks), but a record must

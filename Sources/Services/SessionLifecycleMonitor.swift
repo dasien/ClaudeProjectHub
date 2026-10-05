@@ -269,6 +269,18 @@ final class SessionLifecycleMonitor: ObservableObject {
 
             // Refine status from Claude's per-process file.
             guard let file = ClaudeSessionFile.read(pid: pid) else { continue }
+
+            // Backfill a conversation id the launch failed to capture. Launch
+            // reads it exactly once, and any miss there (slow host, window
+            // lookup timeout) used to leave the record unresumable for good,
+            // even though this file carries the id on every poll. Still
+            // set-once: only an empty id is filled, and never with one that
+            // another record already owns.
+            if session.claudeSessionId == nil,
+               !store.sessions.contains(where: { $0.claudeSessionId == file.sessionId }) {
+                log.notice("Backfilled missing claudeSessionId for \(session.id, privacy: .public) from pid \(pid, privacy: .public)")
+                store.update(id: session.id) { $0.claudeSessionId = file.sessionId }
+            }
             let newStatus: SessionStatus = (file.status == "busy") ? .working : .idle
             let newActivity: Date? = file.updatedAt.map {
                 Date(timeIntervalSince1970: TimeInterval($0) / 1000.0)

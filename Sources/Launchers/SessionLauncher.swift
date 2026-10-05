@@ -53,7 +53,7 @@ enum LauncherError: Error, LocalizedError {
         case .targetWindowMissing:
             return "The selected target session's window is no longer available. Pick a different session or use \"New window\"."
         case .missingClaudeSessionId:
-            return "This session doesn't have a Claude session ID captured, so it can't be resumed. Start a new session in the same directory instead."
+            return "This session's conversation was never recorded, and its folder doesn't contain exactly one conversation that isn't already linked to another session, so there's nothing to resume unambiguously. Start a new session in the same directory, or run `claude --resume` there to pick from its conversations."
         case .unknownHost(let id):
             return "No host configured with id \"\(id)\". Check ~/Library/Application Support/ClaudeProjectHub/hosts.json."
         }

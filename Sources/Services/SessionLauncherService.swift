@@ -223,9 +223,18 @@ final class SessionLauncherService: ObservableObject {
         targetSessionID: Session.ID? = nil
     ) async -> Bool {
         guard session.status == .closed else { return false }
-        guard let claudeSessionId = session.claudeSessionId else {
+        // A record whose id was never captured gets the same recovery as
+        // one whose id points at a missing transcript, below. Refusing
+        // outright made it unresumable even when its folder held exactly
+        // the one conversation it must have been.
+        guard let claudeSessionId = session.claudeSessionId
+                ?? recoverSessionId(for: session.cwd, excluding: session.id) else {
             presentError(LauncherError.missingClaudeSessionId)
             return false
+        }
+        if session.claudeSessionId == nil {
+            launcherLog.notice("Recovered missing claudeSessionId \(claudeSessionId, privacy: .public) for \(session.id, privacy: .public) from its project directory")
+            store.update(id: session.id) { $0.claudeSessionId = claudeSessionId }
         }
         guard let config = hostRegistry.host(forID: session.hostID) else {
             presentError(LauncherError.unknownHost(session.hostID))
@@ -251,7 +260,7 @@ final class SessionLauncherService: ObservableObject {
         var resumedSessionId = claudeSessionId
         let initialJsonl = jsonlPath(for: session.cwd, sessionId: resumedSessionId)
         if !FileManager.default.fileExists(atPath: initialJsonl.path) {
-            if let recovered = recoverSessionId(for: session.cwd) {
+            if let recovered = recoverSessionId(for: session.cwd, excluding: session.id) {
                 resumedSessionId = recovered
                 store.update(id: session.id) { $0.claudeSessionId = recovered }
             } else {
@@ -396,10 +405,14 @@ final class SessionLauncherService: ObservableObject {
         )
 
         var promoted: [Session.ID] = []
-        for session in store.sessions
-            where session.status == .closed
-            && session.claudeSessionId != nil {
-            guard let claudeSessionId = session.claudeSessionId,
+        for session in store.sessions where session.status == .closed {
+            // A record whose id was never captured can still be matched
+            // through the same guarded recovery Resume uses — the folder's
+            // one unowned conversation — but only if a live claude is
+            // actually running it. Otherwise resuming it in a terminal
+            // never re-linked it to its record.
+            guard let claudeSessionId = session.claudeSessionId
+                    ?? (livePIDBySessionId.isEmpty ? nil : recoverSessionId(for: session.cwd, excluding: session.id)),
                   let pid = livePIDBySessionId[claudeSessionId] else { continue }
             guard !claimedConversations.contains(claudeSessionId) else {
                 launcherLog.notice("Skipped stale-closed session \(session.id, privacy: .public) — conversation is already tracked by a running session")
@@ -408,6 +421,7 @@ final class SessionLauncherService: ObservableObject {
             store.update(id: session.id) {
                 $0.status = .idle
                 $0.pid = pid
+                if $0.claudeSessionId == nil { $0.claudeSessionId = claudeSessionId }
             }
             claimedConversations.insert(claudeSessionId)
             promoted.append(session.id)
@@ -695,67 +709,79 @@ final class SessionLauncherService: ObservableObject {
         bundleIdentifier: String?,
         baselinePIDs: Set<pid_t>
     ) async {
-        guard let bundleIdentifier,
-              let pid = NSWorkspace.shared.runningApplications.first(where: {
-                  $0.bundleIdentifier == bundleIdentifier
-              })?.processIdentifier else { return }
+        let hostPID = bundleIdentifier.flatMap { id in
+            NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == id })?.processIdentifier
+        }
 
         // Prefer the launcher's pre-discovered window when it set one (e.g.
         // iTerm2 uses a window-set diff to find the new window directly).
         // Fall back to marker-based title search otherwise (used by Terminal,
         // whose AX window title reflects our custom tab title).
-        let window: AXUIElement
+        var window: AXUIElement?
         if let pre = preDiscoveredWindow {
             window = pre
-        } else if let found = await AXSupport.findWindow(forMarker: marker, in: pid, timeout: 5) {
-            window = found
-        } else {
-            presentError(LauncherError.windowNotFound("timed out finding host window"))
-            return
+        } else if let hostPID {
+            window = await AXSupport.findWindow(forMarker: marker, in: hostPID, timeout: 5)
         }
 
-        bindAndPersist(window: window, to: sessionID)
-        // Auto-dock newly-launched sessions. The DockController writes
-        // the AX frame into the hub's dock rectangle and pins it there.
-        // tabID is filled in below once we've identified the claude
-        // pid — without it, hub-tab switching for sessions that share
-        // a host window (newTab mode) wouldn't switch the host's
-        // internal tab.
-        let hostIDForDock = store.sessions.first(where: { $0.id == sessionID })?.hostID ?? ""
-        dockController.dock(window: window, sessionID: sessionID, hostID: hostIDForDock)
+        if let window {
+            bindAndPersist(window: window, to: sessionID)
+            // Auto-dock newly-launched sessions. The DockController writes
+            // the AX frame into the hub's dock rectangle and pins it there.
+            // tabID is filled in below once we've identified the claude
+            // pid — without it, hub-tab switching for sessions that share
+            // a host window (newTab mode) wouldn't switch the host's
+            // internal tab.
+            let hostIDForDock = store.sessions.first(where: { $0.id == sessionID })?.hostID ?? ""
+            dockController.dock(window: window, sessionID: sessionID, hostID: hostIDForDock)
+        } else {
+            // Keep going. Returning here used to skip the pid and
+            // conversation-id capture below, leaving a pid-less "idle"
+            // record that could never be tracked or resumed while the
+            // real claude ran untracked. Without a window the session just
+            // isn't docked.
+            presentError(LauncherError.windowNotFound("timed out finding host window. The session is still tracked in the sidebar but isn't docked."))
+        }
 
         guard let sessionCWD = store.sessions.first(where: { $0.id == sessionID })?.cwd else { return }
-        if let claudePID = await waitForNewClaudePID(baseline: baselinePIDs, cwd: sessionCWD) {
-            store.update(id: sessionID) { $0.pid = claudePID }
-            // Capture the tab identifier (controlling tty) so a later
-            // tab-switch in the hub can also flip the host's internal
-            // tab via HostTabSelector. Critical for newTab launches
-            // that share a host window with sibling sessions — without
-            // a tabID, `selectActiveTab` can't switch and every hub tab
-            // for that window shows whichever tab the host has current.
-            //
-            // Polled rather than read once: the kernel may not have
-            // assigned a controlling tty yet at this point, and a single
-            // nil read used to leave the session with no tabID until the
-            // lifecycle monitor's self-heal noticed up to 2s later —
-            // observed in the wild on a newTab launch, where clicking
-            // between the sibling tabs did nothing in the meantime.
-            if let tty = await waitForControllingTTY(of: claudePID) {
-                dockController.setTabID(sessionID: sessionID, tabID: tty)
-            } else {
-                launcherLog.notice("No controlling tty for claude pid \(claudePID, privacy: .public) after retries — leaving tabID for the lifecycle self-heal")
-            }
-            if let sessionFile = await ClaudeSessionFile.read(pid: claudePID, timeout: 5) {
-                // Set-once: `claude --resume <id>` assigns a NEW sessionId to
-                // the resumed process (visible in ~/.claude/sessions/<pid>.json),
-                // but the conversation continues to be written to the ORIGINAL
-                // session's JSONL. Overwriting here would point the record at
-                // a process-only id that has no JSONL of its own, breaking the
-                // next Resume.
-                store.update(id: sessionID) {
-                    if $0.claudeSessionId == nil {
-                        $0.claudeSessionId = sessionFile.sessionId
-                    }
+        guard let claudePID = await waitForNewClaudePID(baseline: baselinePIDs, cwd: sessionCWD) else {
+            // No process to track: a running record with no pid has no way
+            // to ever close or be resumed. Close it now, so Resume (with
+            // its conversation recovery) is available instead.
+            dockController.undock(sessionID: sessionID, restoreFrame: false, reason: "no claude process found after launch")
+            windowManager.unbind(sessionID)
+            store.update(id: sessionID) { $0.status = .closed; $0.hostWindowID = nil }
+            return
+        }
+        store.update(id: sessionID) { $0.pid = claudePID }
+        // Capture the tab identifier (controlling tty) so a later
+        // tab-switch in the hub can also flip the host's internal
+        // tab via HostTabSelector. Critical for newTab launches
+        // that share a host window with sibling sessions — without
+        // a tabID, `selectActiveTab` can't switch and every hub tab
+        // for that window shows whichever tab the host has current.
+        //
+        // Polled rather than read once: the kernel may not have
+        // assigned a controlling tty yet at this point, and a single
+        // nil read used to leave the session with no tabID until the
+        // lifecycle monitor's self-heal noticed up to 2s later —
+        // observed in the wild on a newTab launch, where clicking
+        // between the sibling tabs did nothing in the meantime.
+        if let tty = await waitForControllingTTY(of: claudePID) {
+            dockController.setTabID(sessionID: sessionID, tabID: tty)
+        } else {
+            launcherLog.notice("No controlling tty for claude pid \(claudePID, privacy: .public) after retries — leaving tabID for the lifecycle self-heal")
+        }
+        if let sessionFile = await ClaudeSessionFile.read(pid: claudePID, timeout: 5) {
+            // Set-once: `claude --resume <id>` assigns a NEW sessionId to
+            // the resumed process (visible in ~/.claude/sessions/<pid>.json),
+            // but the conversation continues to be written to the ORIGINAL
+            // session's JSONL. Overwriting here would point the record at
+            // a process-only id that has no JSONL of its own, breaking the
+            // next Resume.
+            store.update(id: sessionID) {
+                if $0.claudeSessionId == nil {
+                    $0.claudeSessionId = sessionFile.sessionId
                 }
             }
         }
@@ -862,15 +888,24 @@ final class SessionLauncherService: ObservableObject {
     /// process's id. Returns a recovered sessionId only when there's
     /// exactly one JSONL in the cwd's encoded directory, so we never
     /// silently pick the wrong one.
-    private func recoverSessionId(for cwd: URL) -> String? {
+    /// The one conversation in `cwd`'s project directory that no other
+    /// record owns, or nil if that isn't exactly one. Without the
+    /// ownership filter, an empty session in a folder whose only
+    /// transcript belongs to another record would take that record's
+    /// conversation, leaving two records resuming the same one.
+    private func recoverSessionId(for cwd: URL, excluding sessionID: Session.ID) -> String? {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects/\(cwd.claudeProjectsDirectoryName)")
         guard let contents = try? FileManager.default.contentsOfDirectory(
             at: dir,
             includingPropertiesForKeys: nil
         ) else { return nil }
-        let jsonls = contents.filter { $0.pathExtension == "jsonl" }
-        return jsonls.count == 1 ? jsonls.first?.deletingPathExtension().lastPathComponent : nil
+        let owned = Set(store.sessions.filter { $0.id != sessionID }.compactMap(\.claudeSessionId))
+        let candidates = contents
+            .filter { $0.pathExtension == "jsonl" }
+            .map { $0.deletingPathExtension().lastPathComponent }
+            .filter { !owned.contains($0) }
+        return candidates.count == 1 ? candidates.first : nil
     }
 
     // MARK: - Permission + error UI

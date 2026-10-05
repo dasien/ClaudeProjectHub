@@ -125,6 +125,12 @@ delay 0.3
 -- busy, and typing into it would inject the claude command into
 -- someone else's session. Creating a new terminal is always safe.
 tell application "System Events"
+    -- Keystrokes go to whatever app is frontmost. A long cold start
+    -- gives the user time to switch away, so check right before
+    -- typing rather than trusting the earlier wait.
+    if frontmost of (first process whose bundle identifier is theBundleID) is false then
+        error "VSCode lost focus before the claude command could be typed, so nothing was sent. Bring it to the front and launch the session again."
+    end if
     key code 50 using {control down, shift down}
     delay 1.5
     keystroke theClaude

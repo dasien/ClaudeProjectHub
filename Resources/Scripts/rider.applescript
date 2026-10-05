@@ -114,6 +114,12 @@ delay 0.3
 -- Long delays between keystrokes guard against the shell not yet
 -- being ready inside the freshly-opened terminal.
 tell application "System Events"
+    -- Keystrokes go to whatever app is frontmost. A long cold start
+    -- gives the user time to switch away, so check right before
+    -- typing rather than trusting the earlier wait.
+    if frontmost of (first process whose bundle identifier is theBundleID) is false then
+        error "Rider lost focus before the claude command could be typed, so nothing was sent. Bring it to the front and launch the session again."
+    end if
     key code 50 using {control down}
     delay 1.5
     keystroke theClaude

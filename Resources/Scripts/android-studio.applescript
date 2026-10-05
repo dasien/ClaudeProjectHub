@@ -139,6 +139,12 @@ tell application "System Events"
     -- appears, so a too-short wait sends keystrokes into a pane
     -- that has focus but no live shell yet.
     delay 4.0
+    -- Keystrokes go to whatever app is frontmost. A long cold start
+    -- gives the user time to switch away, so check right before
+    -- typing rather than trusting the earlier wait.
+    if frontmost of (first process whose bundle identifier is theBundleID) is false then
+        error "The IDE lost focus before the claude command could be typed, so nothing was sent. Bring it to the front and launch the session again."
+    end if
     keystroke theClaude
     delay 0.3
     key code 36 -- Return

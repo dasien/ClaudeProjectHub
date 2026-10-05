@@ -113,9 +113,20 @@ final class SessionLauncherService: ObservableObject {
 
         let promoted = reconcileStaleClosedSessions()
         guard !promoted.isEmpty else { return }
+        var shown: Session.ID?
         for id in promoted {
             guard let session = store.sessions.first(where: { $0.id == id }) else { continue }
-            await reattach(session)
+            if await reattach(session) { shown = id }
+        }
+        // The user just resumed this conversation outside the hub and
+        // switched here, so show it. reattach docks with activate: false
+        // (right for startup/wake, where the persisted selection wins);
+        // this selects it without bringing the host app forward. Dock
+        // first, then selection — MainView's onChange then sees it
+        // already active and doesn't raise again.
+        if let shown {
+            dockController.setActiveSessionID(shown)
+            store.selectedSessionID = shown
         }
     }
 
@@ -318,9 +329,9 @@ final class SessionLauncherService: ObservableObject {
         // Reconcile the SwiftUI selection with DockController's active.
         // SessionStore may have restored a selectedSessionID from
         // UserDefaults; if that session is among the ones we just
-        // docked, make it the dock's active too (otherwise the last
-        // session iterated above wins by default, since dock() sets
-        // activeSessionID on every call). If there's no persisted
+        // docked, make it the dock's active too (otherwise whichever
+        // session reattached first stays active — reattach docks with
+        // activate: false). If there's no persisted
         // selection, fall back to whatever ended up active.
         if let persistedID = store.selectedSessionID,
            dockController.dockedSessionIDs.contains(persistedID) {
@@ -491,11 +502,15 @@ final class SessionLauncherService: ObservableObject {
             launcherLog.notice("reattach: session \(session.id, privacy: .public) moved host \(session.hostID, privacy: .public) → \(match.hostID, privacy: .public); updating record")
             store.update(id: session.id) { $0.hostID = match.hostID }
         }
+        // activate: false — this runs on hub activation, startup and
+        // wake, so pulling the host app forward would take focus from
+        // the hub the user just switched to.
         dockController.dock(
             window: window,
             sessionID: session.id,
             hostID: match.hostID,
-            tabID: match.tabIdentifier
+            tabID: match.tabIdentifier,
+            activate: false
         )
         return true
     }

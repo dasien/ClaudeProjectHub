@@ -185,6 +185,10 @@ struct SessionsSidebar: View {
                 .disabled(session.claudeSessionId == nil)
             Button("Rename…") { activateHub(); sessionToRename = session }
             Button("Remove from List", role: .destructive) {
+                // Normally a no-op (closing undocks), but a record must
+                // never outlive its dock binding: the window would stay
+                // pinned with nothing in the hub left to release it.
+                dockController.undock(sessionID: session.id, restoreFrame: false, reason: "removed from list")
                 store.remove(id: session.id)
             }
             Divider()

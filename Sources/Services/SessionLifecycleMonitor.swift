@@ -132,6 +132,11 @@ final class SessionLifecycleMonitor: ObservableObject {
             $0.lastActivityAt = Date()
         }
         windowManager.unbind(sessionID)
+        // The process can end while its window lives on (`/exit` leaves
+        // the shell prompt), so no destroy event will undock it. Left
+        // docked, the window stayed pinned with no tab, and a later
+        // Resume's new window was never pinned.
+        dockController.undock(sessionID: sessionID, restoreFrame: false, reason: "claude process exited")
         if let existing = exitWatchers.removeValue(forKey: sessionID) {
             existing.source.cancel()
         }

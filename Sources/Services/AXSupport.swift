@@ -247,6 +247,15 @@ enum AXSupport {
         )
     }
 
+    /// False when the attribute can't be read, so a failed read never
+    /// keeps a window marked hidden.
+    static func isMinimized(_ element: AXUIElement) -> Bool {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXMinimizedAttribute as CFString, &value) == .success
+        else { return false }
+        return (value as? Bool) ?? false
+    }
+
     static func pid(of element: AXUIElement) -> pid_t? {
         var pid: pid_t = 0
         let err = AXUIElementGetPid(element, &pid)

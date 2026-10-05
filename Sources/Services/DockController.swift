@@ -391,13 +391,26 @@ final class DockController: ObservableObject {
     /// `hostID` and `tabID` (when known) let us switch the host's
     /// internal tab on raise — necessary for hosts where multiple
     /// docked sessions share one window (e.g. two iTerm2 tabs).
+    ///
+    /// `activate: false` is for reattach paths, which run on hub
+    /// activation, startup and wake: the session joins the dock without
+    /// becoming the active tab (unless nothing is) and without bringing
+    /// its host app forward over the hub the user just switched to.
     func dock(
         window: AXUIElement,
         sessionID: Session.ID,
         hostID: String,
-        tabID: String? = nil
+        tabID: String? = nil,
+        activate: Bool = true
     ) {
-        guard !dockedSessionIDs.contains(sessionID) else { return }
+        // Already docked: an early return here used to strand the
+        // session on its old window — a resume or a post-wake reattach
+        // brought it back on a *new* window that was then never pinned,
+        // while raises kept targeting the old one.
+        if dockedSessionIDs.contains(sessionID) {
+            rebind(sessionID: sessionID, to: window, hostID: hostID, tabID: tabID)
+            return
+        }
         dockedSessionIDs.append(sessionID)
         bindings[sessionID] = window
         if let cgID = AXSupport.windowID(of: window) {
@@ -417,16 +430,55 @@ final class DockController: ObservableObject {
         // New docks become the active tab — matches the existing auto-
         // select-on-launch behavior in SessionStore. User can switch
         // away after the fact.
-        activeSessionID = sessionID
+        if activate || activeSessionID == nil {
+            activeSessionID = sessionID
+        }
         observe(window: window)
         // Snap sibling docked sessions to the current dockRect (they
         // were already at it; this catches any drift). The newly-
         // added session gets an animated glide-in instead.
         for id in dockedSessionIDs where id != sessionID {
-            repositionOne(id)
+            repositionOne(id, force: true)
         }
         animateInto(sessionID: sessionID, from: initialFrame, element: window)
-        raiseActive()
+        if activate {
+            raiseActive()
+        } else {
+            raiseActiveWithoutFocus(syncTab: false)
+        }
+        updateMouseGate()
+    }
+
+    /// Points an already-docked session at a (possibly) new window.
+    /// Same element: just refresh what may have changed. Different
+    /// element: move the AX subscriptions over and pin the new window,
+    /// keeping the session's place in the dock and the active state.
+    private func rebind(sessionID: Session.ID, to window: AXUIElement, hostID: String, tabID: String?) {
+        hostIDsBySession[sessionID] = hostID
+        if let tabID { tabIDsBySession[sessionID] = tabID }
+        if let old = bindings[sessionID], CFEqual(old, window) { return }
+
+        dockLog.notice("dock: re-binding already-docked \(sessionID, privacy: .public) onto a new window")
+        animator.cancel(sessionID: sessionID)
+        if let old = bindings.removeValue(forKey: sessionID) {
+            unobserveIfUnused(window: old)
+        }
+        let newCGID = AXSupport.windowID(of: window)
+        // A wake can reissue the element for the *same* window. Only a
+        // genuinely different window gets a fresh pre-dock frame and
+        // loses the old tty; otherwise the saved frame would become the
+        // dock rect itself and Undock would restore to where it already is.
+        if newCGID != cgIDsBySession[sessionID] {
+            let initialFrame = AXSupport.frame(of: window)
+            if !initialFrame.isEmpty { preDockFrames[sessionID] = initialFrame }
+            if tabID == nil { tabIDsBySession.removeValue(forKey: sessionID) }
+        }
+        bindings[sessionID] = window
+        cgIDsBySession[sessionID] = newCGID
+        if !AXSupport.isMinimized(window) { minimizedSessionIDs.remove(sessionID) }
+        observe(window: window)
+        repositionOne(sessionID, force: true)
+        if activeSessionID == sessionID { raiseActiveWithoutFocus(syncTab: false) }
         updateMouseGate()
     }
 
@@ -496,11 +548,22 @@ final class DockController: ObservableObject {
         dockedSessionIDs.removeAll { $0 == sessionID }
         minimizedSessionIDs.remove(sessionID)
         hubMinimizedSessionIDs.remove(sessionID)
-        if activeSessionID == sessionID {
-            activeSessionID = dockedSessionIDs.first
+        let activeChanged = activeSessionID == sessionID
+        if activeChanged {
+            // Same choice as promoteActiveAwayFromMinimized: the most
+            // recently docked session that's actually visible. Picking
+            // `.first` could land on a minimized one, whose raise is then
+            // skipped, leaving an empty dock area.
+            let visible = dockedSessionIDs.filter { !minimizedSessionIDs.contains($0) }
+            activeSessionID = visible.last ?? dockedSessionIDs.last
+            if store.selectedSessionID == sessionID, let newActive = activeSessionID {
+                Task { @MainActor [weak self] in
+                    self?.store.selectedSessionID = newActive
+                }
+            }
         }
         if let element = bindings.removeValue(forKey: sessionID) {
-            unobserve(window: element)
+            unobserveIfUnused(window: element)
         }
         cgIDsBySession.removeValue(forKey: sessionID)
         hostIDsBySession.removeValue(forKey: sessionID)
@@ -510,8 +573,10 @@ final class DockController: ObservableObject {
         // Don't activate the new active's host app — the user just
         // closed something; pulling focus over to a sibling foreign
         // window would be jarring. AX raise alone keeps the right
-        // window visible through the transparent dock area.
-        if activeSessionID != nil { raiseActiveWithoutFocus() }
+        // window visible through the transparent dock area. Only sync
+        // the host's tab when the active session actually changed —
+        // otherwise this would undo a tab the user picked in the host.
+        if activeSessionID != nil { raiseActiveWithoutFocus(syncTab: activeChanged) }
         updateMouseGate()
     }
 
@@ -635,9 +700,9 @@ final class DockController: ObservableObject {
     /// (when the hub stops moving), from dock(), and after a debounced
     /// display reconfiguration event. Inactive tabs catch up to the
     /// current dockRect here.
-    private func repositionAll() {
+    private func repositionAll(force: Bool = false) {
         for id in dockedSessionIDs {
-            repositionOne(id)
+            repositionOne(id, force: force)
         }
     }
 
@@ -664,6 +729,11 @@ final class DockController: ObservableObject {
     /// which can briefly appear during the reconfig — get undocked,
     /// matching the destroy-event cleanup path.
     private func handleScreenParametersChanged() {
+        // The gate converts the dock rect to AppKit coordinates against
+        // the primary display's height, which a display change can alter
+        // while the hub (and so the CG dock rect) stays put — setDockRect
+        // wouldn't fire, and click-through would land offset.
+        updateMouseGate()
         guard !dockedSessionIDs.isEmpty else { return }
         dockLog.notice("Display configuration changed — validating + re-pinning \(self.dockedSessionIDs.count, privacy: .public) docked session(s)")
         // Collect dangling first so we don't mutate dockedSessionIDs
@@ -678,14 +748,20 @@ final class DockController: ObservableObject {
         for id in dangling {
             undock(sessionID: id, restoreFrame: false, reason: "AX element dangling after display reconfiguration")
         }
-        repositionAll()
+        repositionAll(force: true)
     }
 
-    private func repositionOne(_ id: Session.ID) {
+    /// `force` writes both axes even when they match the last write.
+    /// The skip is only valid when *we* are the one moving things (the
+    /// hub-drag hot path). When the host moved or resized its own
+    /// window — a nudge, iTerm2 growing a tab bar, the OS migrating it
+    /// on a display change — the dock rect hasn't changed, so the skip
+    /// turned every snap-back and re-pin into a no-op.
+    private func repositionOne(_ id: Session.ID, force: Bool = false) {
         guard dockRect != .zero,
               let element = bindings[id],
               let cgID = cgIDsBySession[id] else { return }
-        let last = lastWrittenFrames[id] ?? .zero
+        let last = force ? .zero : (lastWrittenFrames[id] ?? .zero)
         // Skip writes for axes that haven't changed since the last
         // write for this session. During a hub drag origin changes
         // every frame but size doesn't — this halves the AX IPC.
@@ -708,9 +784,8 @@ final class DockController: ObservableObject {
         // Don't raise a session whose window the user just hid or
         // minimized — AXSupport.raise would un-hide the foreign app
         // (setting AXMain / AXFocused on a hidden window deminiaturizes
-        // it on most macOS versions). Phase 8 step 3 will auto-promote
-        // a sibling so the tab bar stays coherent; for now we just
-        // respect the gesture.
+        // it on most macOS versions). promoteActiveAwayFromMinimized
+        // moves the active tab to a visible sibling.
         guard !minimizedSessionIDs.contains(id) else { return }
         if let pid = AXSupport.pid(of: element),
            let app = NSRunningApplication(processIdentifier: pid) {
@@ -828,7 +903,10 @@ final class DockController: ObservableObject {
             try? await Task.sleep(nanoseconds: 250_000_000)
             guard let self, !Task.isCancelled else { return }
             self.repositionAll()
-            self.raiseActiveWithoutFocus()
+            // No tab sync: a hub move doesn't change the active session,
+            // and syncing here switched the host back to the hub's tab
+            // after every resize, undoing a tab the user picked in iTerm.
+            self.raiseActiveWithoutFocus(syncTab: false)
         }
     }
 
@@ -865,8 +943,14 @@ final class DockController: ObservableObject {
         }
     }
 
-    private func unobserve(window: AXUIElement) {
-        guard let pid = AXSupport.pid(of: window),
+    /// Call after the session's binding has been removed. Tab siblings
+    /// share one AX element and AX keeps a single registration per
+    /// element, so unsubscribing while a sibling is still docked
+    /// silently cut *its* moved/destroyed/minimized events too — Cmd-M,
+    /// drag-out and window close all stopped registering for it.
+    private func unobserveIfUnused(window: AXUIElement) {
+        guard sessionIDs(for: window).isEmpty,
+              let pid = AXSupport.pid(of: window),
               let observer = observers[pid] else { return }
         observer.unsubscribe(element: window, notifications: [
             AXNotification.moved,
@@ -875,8 +959,18 @@ final class DockController: ObservableObject {
             AXNotification.miniaturized,
             AXNotification.deminiaturized
         ])
-        // Don't drop the per-pid observer — sibling windows from the
-        // same app may still be docked (e.g. two iTerm2 sessions).
+        // Last docked window for this app: release the per-pid observer
+        // and its app-level focus subscription, rather than keeping them
+        // (and an AX query on every activation of that app) forever.
+        let pidStillDocked = bindings.values.contains { AXSupport.pid(of: $0) == pid }
+        if !pidStillDocked {
+            if appFocusSubscribedPIDs.remove(pid) != nil {
+                observer.unsubscribe(element: AXSupport.appElement(for: pid), notifications: [
+                    AXNotification.focusedWindowChanged
+                ])
+            }
+            observers.removeValue(forKey: pid)
+        }
     }
 
     private func handle(event: AXObserver.Event) {
@@ -982,6 +1076,18 @@ final class DockController: ObservableObject {
         guard !affected.isEmpty else { return }
         minimizedSessionIDs.subtract(affected)
         updateMouseGate()
+        // Restoring a window from the Dock makes the host report the
+        // focus change *before* the deminiaturize, while the session is
+        // still marked minimized — so syncSelection ignored it and the
+        // hub kept showing the previous tab. Re-check now that the mark
+        // is cleared. Gated on the host being frontmost with this as its
+        // focused window, so hub-driven restores (reselecting a session,
+        // hub un-minimize) don't move the selection.
+        guard let pid = AXSupport.pid(of: event.element),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              let focused = AXSupport.focusedWindow(ofApplication: AXSupport.appElement(for: pid)),
+              CFEqual(focused, event.element) else { return }
+        handleExternalFocus(window: event.element)
     }
 
     /// Cmd-H hid the foreign app — mark every docked session that
@@ -1008,6 +1114,11 @@ final class DockController: ObservableObject {
         for sessionID in dockedSessionIDs {
             guard let element = bindings[sessionID],
                   AXSupport.pid(of: element) == pid else { continue }
+            // Cmd-M and Cmd-H share minimizedSessionIDs, so an unhide
+            // must not clear a window that's still individually
+            // minimized — that re-enabled click-through over an empty
+            // dock rect and let the next raise un-minimize it.
+            guard !AXSupport.isMinimized(element) else { continue }
             minimizedSessionIDs.remove(sessionID)
         }
         updateMouseGate()
@@ -1109,7 +1220,7 @@ final class DockController: ObservableObject {
             // every sibling; they're the same window. The setFrame is
             // recorded with the tracker so the resulting AX event
             // doesn't loop us back here.
-            repositionOne(sessionID)
+            repositionOne(sessionID, force: true)
         }
     }
 

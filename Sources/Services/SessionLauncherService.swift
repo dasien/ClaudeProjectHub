@@ -724,7 +724,8 @@ final class SessionLauncherService: ObservableObject {
         let hostIDForDock = store.sessions.first(where: { $0.id == sessionID })?.hostID ?? ""
         dockController.dock(window: window, sessionID: sessionID, hostID: hostIDForDock)
 
-        if let claudePID = await waitForNewClaudePID(baseline: baselinePIDs) {
+        guard let sessionCWD = store.sessions.first(where: { $0.id == sessionID })?.cwd else { return }
+        if let claudePID = await waitForNewClaudePID(baseline: baselinePIDs, cwd: sessionCWD) {
             store.update(id: sessionID) { $0.pid = claudePID }
             // Capture the tab identifier (controlling tty) so a later
             // tab-switch in the hub can also flip the host's internal
@@ -780,19 +781,49 @@ final class SessionLauncherService: ObservableObject {
 
     // MARK: - claude PID discovery
 
+    /// Finds the claude process this launch started. "Any pid that's new
+    /// since the baseline" used to be enough, but two launches close
+    /// together — or the user starting claude anywhere else in the
+    /// window — let a session claim another's process. claudeSessionId is
+    /// set-once, so the wrong conversation then stuck to the record, and
+    /// Close could kill the other session's claude or close its tab.
+    ///
+    /// So a candidate must also be unclaimed by any other session and
+    /// running in this session's directory per its per-pid file. A pid
+    /// is only rejected on positive evidence (different cwd, or already
+    /// claimed); one whose file isn't written yet is retried, and is
+    /// accepted at the deadline only if it's the sole unclaimed candidate.
     private func waitForNewClaudePID(
         baseline: Set<pid_t>,
+        cwd: URL,
         timeout: TimeInterval = 8
     ) async -> pid_t? {
+        let wanted = Self.canonicalPath(cwd)
         let deadline = Date().addingTimeInterval(timeout)
+        var unverified: Set<pid_t> = []
         while Date() < deadline {
-            let now = await currentClaudePIDs()
-            if let new = now.subtracting(baseline).first {
-                return new
+            let claimed = Set(store.sessions.compactMap(\.pid))
+            let candidates = (await currentClaudePIDs()).subtracting(baseline).subtracting(claimed)
+            unverified = []
+            for pid in candidates.sorted() {
+                guard let file = ClaudeSessionFile.read(pid: pid), let fileCWD = file.cwd else {
+                    unverified.insert(pid)
+                    continue
+                }
+                if Self.canonicalPath(URL(fileURLWithPath: fileCWD)) == wanted { return pid }
             }
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
+        if unverified.count == 1, let pid = unverified.first {
+            launcherLog.notice("Accepting claude pid \(pid, privacy: .public) without a cwd match — its per-pid file never appeared and it's the only unclaimed candidate")
+            return pid
+        }
+        launcherLog.notice("No claude pid matched \(wanted, privacy: .public) within \(Int(timeout), privacy: .public)s (\(unverified.count, privacy: .public) unverifiable candidate(s)) — leaving the session without a pid")
         return nil
+    }
+
+    private static func canonicalPath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     /// `nonisolated` deliberately: this spawns `pgrep` and blocks on

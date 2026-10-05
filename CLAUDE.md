@@ -448,7 +448,9 @@ Note the `sed` in `bump_version` is anchored on leading whitespace plus the sett
 
 1. **Build (Release)** — `xcodegen` then `xcodebuild` with signing disabled (`CODE_SIGNING_ALLOWED=NO`). It proves the code compiles, not that it can ship: there's no certificate in CI and the distribution model is that each developer signs their own copy. Note it must `cp signing.xcconfig.example signing.xcconfig` first, because `project.yml` references that gitignored file for both configs and `xcodegen` fails outright without it.
 2. **Launch scripts compile** — `tools/check-scripts.sh`, which catches something no build does: a syntax error in a host's `.applescript` otherwise surfaces only when a user launches a session into that host.
-3. **Doc links resolve** — `tools/check-doc-links.sh`. Broken `#anchors` are a silent no-op on GitHub, so nothing else catches them.
+3. **Doc links resolve** — `tools/check-doc-links.sh`. Broken `#anchors` are a silent no-op on GitHub, so nothing else catches them. Covers cross-file *and* bare same-file `](#anchor)` links; external URLs and non-`.md` targets are deliberately out of scope.
+
+   The slug algorithm is Python rather than a `sed` pipeline because three rules are easy to get wrong and were each getting it wrong: underscores survive, punctuation is stripped before spaces become hyphens with no trim after (so `Settings (⌘,)` is `settings-`), and lines inside ``` fences aren't headings. The first two reject valid links, the third accepts invalid ones. It's verified against the anchors GitHub emits for all 98 headings in these docs — if one is ever in doubt, `curl` the rendered page and read the `user-content-*` id rather than reasoning about it.
 
 `xcode-version` is pinned to `latest-stable` rather than the documented floor. The app has only ever been built on Xcode 26.x, so validating an older minimum would mean chasing a ten-version gap for no benefit — if the supported floor ever matters, test it deliberately.
 

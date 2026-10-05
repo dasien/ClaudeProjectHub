@@ -566,7 +566,7 @@ Prompted a survey of window-manager patterns (AeroSpace, Amethyst, Rectangle, Ha
 
 #### Docking Phase 9 polish
 
-Tab icons + larger chips shipped. Remaining: animation on dock/undock, tab thumbnails (would use ScreenCaptureKit), drag-to-reorder tabs.
+Tab icons + larger chips shipped, and drag-to-reorder (2026-10-05): the tab order *is* the order of `SessionStore.sessions` (the sidebar sorts independently), so `SessionStore.move(_:toPositionOf:)` reorders the records and the arrangement persists in `sessions.json` with no separate setting; Cmd-1..9 follow it. Tabs move live in `DropDelegate.dropEntered` as the drag passes over them. Remaining: animation on dock/undock, tab thumbnails (would use ScreenCaptureKit).
 
 #### Session-tracking audit follow-ups — remaining roadmap
 

@@ -64,6 +64,23 @@ final class SessionStore: ObservableObject {
         save()
     }
 
+    /// Moves a session to `target`'s position: after it when moving
+    /// right, before it when moving left — the live-reorder rule a tab
+    /// drag needs as it passes over each tab. The array order *is* the tab
+    /// order (the sidebar sorts on its own), so persisting it here is all
+    /// the tab bar needs to keep a user's arrangement across restarts.
+    func move(_ id: Session.ID, toPositionOf target: Session.ID) {
+        guard id != target,
+              let from = sessions.firstIndex(where: { $0.id == id }),
+              let to = sessions.firstIndex(where: { $0.id == target }) else { return }
+        // Inserting at the target's original index does both: moving
+        // right, the removal shifted the target left, so this lands after
+        // it; moving left, nothing shifted, so this lands before it.
+        let session = sessions.remove(at: from)
+        sessions.insert(session, at: to)
+        save()
+    }
+
     func remove(id: Session.ID) {
         sessions.removeAll { $0.id == id }
         if selectedSessionID == id {

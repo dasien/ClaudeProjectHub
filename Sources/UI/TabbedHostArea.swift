@@ -5,6 +5,10 @@ struct TabbedHostArea: View {
     @EnvironmentObject private var windowManager: WindowManager
     @EnvironmentObject private var hostRegistry: HostRegistry
     @EnvironmentObject private var dockController: DockController
+    /// The tab being dragged, so hovering over another tab knows what to
+    /// move. Cleared on drop; a drag that ends outside the bar leaves it
+    /// set harmlessly — the next drag overwrites it.
+    @State private var draggingID: Session.ID?
 
     /// Sessions that get a tab: running *and* still backed by a window.
     ///
@@ -102,6 +106,18 @@ struct TabbedHostArea: View {
                     // docked terminal directly, Terminal sees the key
                     // event first.
                     .keyboardShortcut(Self.shortcut(for: index))
+                    // Drag to reorder. Tabs move live as the drag passes
+                    // over them, so the order is already final by drop
+                    // time; Cmd-1..9 follow the new order.
+                    .onDrag {
+                        draggingID = session.id
+                        return NSItemProvider(object: session.id.uuidString as NSString)
+                    }
+                    .onDrop(of: [.text], delegate: TabReorderDelegate(
+                        target: session.id,
+                        draggingID: $draggingID,
+                        store: store
+                    ))
                 }
             }
             .padding(.horizontal, 8)
@@ -170,6 +186,30 @@ struct TabbedHostArea: View {
         dockController.dockedSessionIDs.isEmpty
             ? "New sessions launched here will dock automatically"
             : "All docked sessions are hidden. Click a tab to bring one back."
+    }
+}
+
+private struct TabReorderDelegate: DropDelegate {
+    let target: Session.ID
+    @Binding var draggingID: Session.ID?
+    let store: SessionStore
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging = draggingID, dragging != target else { return }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            store.move(dragging, toPositionOf: target)
+        }
+    }
+
+    // .move rather than the default .copy, so the cursor doesn't show
+    // a "+" badge for what is a rearrangement.
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggingID = nil
+        return true
     }
 }
 

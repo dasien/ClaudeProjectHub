@@ -53,14 +53,16 @@ Fields (`Sources/Models/Session.swift`):
 - `hostID`: string referencing a `HostConfig` in the registry
 - `claudeSessionId`: Claude's conversation UUID (the JSONL filename) — set ONCE at first launch and never overwritten (see "claude --resume" below)
 - `status`: `idle` / `working` / `closed`
-- `pid`: claude process PID (transient; cleared on close/load)
-- `hostWindowID`: CGWindowID (transient; cleared on close/load)
+- `pid`: claude process PID. Cleared on close; kept across a hub restart while the process is still alive, so `reattachAll()` can re-bind it
+- `hostWindowID`: CGWindowID of the last bound window, persisted as a reattach breadcrumb. Cleared on close
 - `cacheTTL`: `PromptCacheTTL` (`.fiveMinutes` / `.oneHour`) — chosen at launch, reused verbatim on resume. A running session's TTL can't be changed, so this records what it was actually started with. Absent on records written before the picker existed; those decode as `.fiveMinutes`, which is what they ran with.
 - `createdAt`, `lastActivityAt`
 
 Codable backwards-compat: legacy persisted records used `hostKind: HostKind` (an enum). The custom `init(from:)` accepts both `hostID` and legacy `hostKind` keys; encoding always writes `hostID`.
 
-On hub launch, `SessionStore.load()` downgrades any persisted `idle`/`working` records to `closed` — we don't yet have process re-attachment, so live sessions from a previous hub run are treated as already-closed.
+On hub launch, `SessionStore.load()` keeps a running record as `.idle` if its pid is still alive and downgrades it to `.closed` otherwise; `reattachAll()` then re-binds the survivors.
+
+**A file that fails to decode is never overwritten** (2026-10-05). The whole-array decode is all-or-nothing, and it used to leave an empty list that the next save wrote over the file, so one bad record — a hand edit, or a status value from a newer build sharing the file — erased every session. `CorruptFile.preserve` now copies the file aside first (`sessions.json.corrupt-<timestamp>`) and every record that decodes on its own is kept; if the copy fails, saving is blocked. `HostRegistry` does the same for `hosts.json` before falling back to defaults.
 
 ---
 
@@ -95,6 +97,7 @@ Placeholder substitution applied to the script before execution:
 | `{marker}` | unique tag (e.g. set as a tab title for AX matching) |
 | `{mode}` | `"newWindow"` or `"newTab"` |
 | `{targetWindowID}` | CGWindowID of the user-picked target window for newTab mode (`0` otherwise) |
+| `{bundleID}` | the host's bundle identifier from hosts.json — for `open -b` and System Events process lookups |
 
 Substituted strings are AppleScript-escaped (`\\` and `\"`), so `"{cwd}"` is safe inside a string literal.
 
@@ -212,7 +215,11 @@ store.update(id: sessionID) {
 }
 ```
 
-There's also a recovery heuristic: if a session's stored `claudeSessionId` doesn't have a JSONL on disk (because of an earlier overwrite bug), and the cwd's encoded directory has *exactly one* JSONL, use it and persist the correction. We don't guess if there's more than one.
+There's also a recovery heuristic: if a session's stored `claudeSessionId` doesn't have a JSONL on disk (because of an earlier overwrite bug) — or the record has no id at all — and the cwd's encoded directory has *exactly one* JSONL **that no other record owns**, use it and persist the correction. We don't guess if there's more than one. The ownership filter matters: without it, an empty session in a folder whose only transcript belongs to another record took that record's conversation.
+
+**Launch is not the only capture point any more** (2026-10-05). It used to be: one attempt that needed the window found, the pid found within 8s, and the per-pid file read within 5s, and any miss left the id empty for good — a real record (`rust-cli`, launched 2026-08-23) sat unresumable for six weeks with its one conversation right there on disk. Now the lifecycle poll fills an empty id from the per-pid file it already reads every 2s, Resume runs the recovery above for an id-less record (the Resume menu item is always enabled), and the activation reconcile uses the same recovery to re-link an id-less record when the user resumes its conversation in a terminal — but only when a live claude is actually running that conversation. A failed window lookup also no longer aborts pid/id capture, and a launch that finds no claude process closes its record instead of leaving a pid-less "idle" row that could never resolve.
+
+**The new pid is matched, not guessed.** `waitForNewClaudePID` used to take any claude pid new since the launch's baseline, so a second launch — or the user starting claude anywhere — inside the polling window could claim another session's process, and set-once then made the wrong conversation permanent. A candidate must now be unclaimed by any record and running in the session's cwd per its per-pid file; a pid whose file hasn't appeared is accepted at the deadline only if it's the sole unclaimed candidate.
 
 ### Empty conversations can't be resumed
 
@@ -281,6 +288,8 @@ Adding a second tab to an iTerm2 window makes iTerm2 grow the window by its tab-
 
 Thresholding the delta does **not** work — that was tried and failed. The tab bar is larger than any threshold small enough to still catch a deliberate resize, and its height isn't a constant you can hard-code. The rule now: **a resize never undocks; only a move past `undockThreshold` does.** A docked window is pinned, so its size belongs to the dock — snap it back and absorb host chrome changes of any magnitude. Verified iTerm2 accepts being held at the dock height with two tabs open (it just gives the content area 35px less) and does not reassert, so this doesn't become a tug-of-war. Tear-out stays available via titlebar drag and the sidebar's explicit Undock.
 
+**Until 2026-10-05 the snap-back was silently a no-op.** `repositionOne` skips any axis that matches `lastWrittenFrames`, which is right on the hub-drag hot path (we're the ones moving) and wrong everywhere the *host* moved the window: the dock rect hasn't changed, so nothing was written. Snap-back, the display-change re-pin and the sibling drift-catch now pass `force: true`. Verified by hand 2026-10-05: a 15px nudge glides back, and a docked iTerm2 window gaining a tab bar is held at dock size.
+
 Note AX/CGWindow coordinates are in **points**, not physical pixels, so none of these numbers change with Retina scaling or monitor resolution.
 
 ### The tab-select AppleScript must run synchronously, right after the raise
@@ -309,7 +318,9 @@ Two traps found while building this:
 - **Don't `close` while iterating.** `repeat with t in tabs of w … close t` mutates the collection mid-loop and fails with `-1719` ("Invalid index"). Resolve the target reference first, close after the loop. Same shape of bug applies to any destructive AppleScript iteration.
 - **A closed tab fires no window-destroy AX event**, so `handleDestroyEvent` never runs and the session has to be undocked explicitly. Otherwise it lingers in `dockedSessionIDs` bound to a window it no longer occupies. Only the sole-occupant path gets undocked for free.
 
-Related UI detail: `undock()` promotes the dock's `activeSessionID`, so content follows a close — but the sidebar row and tab highlight track `store.selectedSessionID`, which has to be moved separately or it stays on the closed session.
+Related UI detail: `undock()` promotes the dock's `activeSessionID`, so content follows a close — but the sidebar row and tab highlight track `store.selectedSessionID`, which has to be moved separately or it stays on the closed session. `undock()` now does that itself when the undocked session was the selected one, and promotes to a *visible* sibling.
+
+**When claude exits on its own, the tab goes with it** (2026-10-05). The Terminal and iTerm2 scripts run `cd <dir> && <claude> && exit`, so a clean exit (`/exit`) ends the shell and the host closes the tab — or the window, if it was the last tab — per its own "when the shell exits" profile setting. `&& exit` rather than `; exit` deliberately: a crash, or a `cd` into a folder that's gone, leaves the shell open with the error visible. The hub's SIGTERM close path counts as a failed exit, so on Terminal the tab still survives at a prompt there, as described above. Separately, `SessionLifecycleMonitor.markClosed` now undocks: a process can end while its window lives on, no destroy event fires, and the session used to stay pinned with no tab — which also stranded a later Resume's new window, since `dock()` returned early for an id it thought was docked.
 
 ### Window title doesn't survive shell/claude
 
@@ -539,6 +550,7 @@ log stream --predicate 'process == "tccd" AND (eventMessage CONTAINS "ClaudeProj
 
 - **Prompt-cache TTL + expiry warnings** (commits `ed01612`, `0f7946f`, 2026-08-14): New Session dialog picks 5m or 1h; the choice rides to `claude` as an `ENABLE_PROMPT_CACHING_1H=1` prefix from `ShellCommand.claudeInvocation`, persists on `Session.cacheTTL`, and is reused on resume. `AttentionService` warns ~1 minute before expiry (15s timer, one warning per lull, amber `clock.badge.exclamationmark` on the sidebar row) with a Settings toggle for the banner. Defaults to 5m (Claude Code's own default), so nothing changes for anyone who doesn't ask. Both paths verified 2026-08-14 — see "Prompt-cache TTL" above for the mechanism.
 - **Accurate pricing in Get Info** (commit `471cf01`, 2026-08-14): `models.json` stopped at `claude-opus-4-7`, so `claude-opus-5` and `claude-opus-4-8` matched nothing and — because `SessionUsage` skips unknown models and `fallback` is nil — 81.5% of a session's tokens were priced at $0 behind a confident-looking total, understating it roughly five-fold. Added the 5-series entries from the cited pricing page, made the table version-updatable so an existing install actually receives corrections (see the Deferred entry on bundled-file updates — this is the trap that makes such a fix look done while every install stays wrong), and surfaced unpriced models as "Total Cost (partial)" instead of silently dropping them. Zero-token models are no longer listed at all: Claude Code files locally-fabricated messages ("No response requested.", "Prompt is too long") under model id `<synthetic>` with every count at 0, since no request was made. **Still unpriced: fast mode** — $10/$50 per MTok on Opus 5/4.8 against $5/$25 standard, detectable from the `speed` field the transcript already records, so a `/fast` session is understated by up to 2×. `inference_geo: "us"` adds a further 1.1×.
+- **Hub/host interaction fixes from the 2026-10-05 review** (six parallel reviewers; every item below verified by hand except the IDE keystroke guard): `dock()` re-binds an already-docked session onto its new window instead of returning early, and takes `activate:` so reattach paths (activation, startup, wake) don't pull the host app in front of the hub; the activation reconcile then selects the session it just reattached, since the user resumed that conversation and came to look at it. Undocking one tab sibling no longer unsubscribes the AX events the others share (AX keeps one registration per element), and a host's per-pid observer is released once nothing of it is docked. The hub-move settle no longer syncs the host's tab, which undid tab choices the user made inside iTerm. Unhiding an app re-reads `kAXMinimized` before clearing a window from `minimizedSessionIDs` (Cmd-M and Cmd-H share that set). A window restored from the Dock now moves the selection to it — the host reports the focus change *before* the deminiaturize, while the session is still marked minimized, so `syncSelection` used to ignore it. The mouse gate refreshes on display changes. The IDE scripts that type into a terminal (VSCode, Rider, the eight menu-walk JetBrains scripts) check the IDE is frontmost immediately before typing and error out otherwise. **Open:** whether JetBrains' View → Tool Windows → Terminal reuses a busy terminal tab rather than opening a new one — if it does, the menu walk can type into a running session, and the script needs a "new terminal session" action instead.
 - **Context-menu UI needs explicit activation** (commit `2660f93`, 2026-08-14): a right-click doesn't activate a macOS app, and docked host windows are pinned *above* the hub — so Get Info opened a window nobody could see, and the user had to click the hub and retry. Every sidebar context-menu action that presents UI now calls `NSApp.activate()` first: Get Info, Rename, Resume, historical Resume, New Session. The Rename/Resume sheets had the same defect for the same reason (they attach to the hub's own window). `AttentionService.handleNotificationClick` already did this — same problem arriving by a different route. Note `SessionLauncherService`'s `NSAlert` paths are unaudited for this.
 
 ### Session-tracking audit — full findings, in case some become useful later
